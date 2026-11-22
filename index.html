@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CajuTerm</title>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <!-- Camada de fundo customizável (cor, gradiente, imagem, GIF ou vídeo) -->
+      <div id="bg-layer" class="bg-layer" aria-hidden="true">
+        <div id="bg-media-slot" class="bg-media-slot"></div>
+        <div id="bg-tint-overlay" class="bg-tint-overlay"></div>
+      </div>
+
+      <!-- Barra de título customizada (janela frameless) + Abas -->
+      <header id="titlebar" class="titlebar" data-tauri-drag-region>
+        <div class="titlebar-brand" data-tauri-drag-region>
+          <span class="brand-badge" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 64 64" fill="none">
+              <defs>
+                <linearGradient id="cajuFrame" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#f5b041" />
+                  <stop offset="100%" stop-color="#00f0ff" />
+                </linearGradient>
+                <linearGradient id="cajuPulp" x1="20" y1="24" x2="36" y2="54" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#e63946" />
+                  <stop offset="55%" stop-color="#ff7b00" />
+                  <stop offset="100%" stop-color="#ffba08" />
+                </linearGradient>
+              </defs>
+              <!-- Janela moderna de terminal -->
+              <rect x="4" y="4" width="56" height="56" rx="11" fill="#0d0816" stroke="url(#cajuFrame)" stroke-width="2.5" />
+              <line x1="6" y1="15" x2="58" y2="15" stroke="url(#cajuFrame)" stroke-width="1.6" />
+              <circle cx="12" cy="9.5" r="1.7" fill="#ff2a85" />
+              <circle cx="17.5" cy="9.5" r="1.7" fill="#ffba08" />
+              <circle cx="23" cy="9.5" r="1.7" fill="#00f0ff" />
+              <!-- Moldura rústica de xilogravura (cantoneiras entalhadas) -->
+              <path d="M10 21H16M10 21V27M54 21H48M54 21V27M10 54H16M10 54V48M54 54H48M54 54V48" stroke="#f4d58d" stroke-width="1.6" stroke-linecap="square" />
+              <!-- Castanha rústica entalhada -->
+              <path d="M27 21C31 18 39 19 40 23C40 26 35 28 31 27C28 26 26 23 27 21Z" fill="#e9c46a" stroke="#09060d" stroke-width="2" />
+              <path d="M30 22.5C32.5 22 35.5 22.5 37 24" stroke="#2b1708" stroke-width="1.2" stroke-linecap="round" />
+              <!-- Corpo do caju com hachuras de xilogravura -->
+              <path d="M26 26C33 26 38 33 38 42C38 50 32 55 25 54C18 53 15 47 17 39C18.5 32 21.5 26 26 26Z" fill="url(#cajuPulp)" stroke="#09060d" stroke-width="2.2" />
+              <path d="M20 34H34M19 39H35M19 44H35M21 49H32" stroke="#160a14" stroke-width="1.4" stroke-linecap="round" opacity="0.82" />
+              <!-- Prompt moderno ">_" -->
+              <path d="M31 35L41 41.5L31 48" stroke="#09060d" stroke-width="5.2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M31 35L41 41.5L31 48" stroke="#00f0ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+              <line x1="42" y1="49" x2="51" y2="49" stroke="#09060d" stroke-width="5.2" stroke-linecap="round" />
+              <line x1="42" y1="49" x2="51" y2="49" stroke="#e0fcff" stroke-width="3" stroke-linecap="round" />
+            </svg>
+          </span>
+          <span class="brand-name">CajuTerm</span>
+        </div>
+
+        <div id="tabs-bar" class="tabs-bar" role="tablist" data-tauri-drag-region></div>
+
+        <div class="titlebar-actions">
+          <div class="paths-dropdown-wrap">
+            <button id="btn-paths-menu" class="tb-btn" title="Atalhos de Pastas (Paths)" aria-label="Atalhos de Pastas">📁</button>
+            <div id="paths-dropdown" class="paths-dropdown hidden"></div>
+          </div>
+          <button id="btn-new-tab" class="tb-btn" title="Nova Aba (Ctrl+Shift+T)" aria-label="Nova Aba">+</button>
+          <div class="profile-dropdown-wrap">
+            <button id="btn-profile-menu" class="tb-btn tb-btn-small" title="Escolher Perfil" aria-label="Escolher Perfil">▾</button>
+            <div id="profile-dropdown" class="profile-dropdown hidden"></div>
+          </div>
+          <button id="btn-split-v" class="tb-btn" title="Split Vertical (Alt+Shift+D)" aria-label="Split Vertical">⫼</button>
+          <button id="btn-split-h" class="tb-btn" title="Split Horizontal (Alt+Shift+E)" aria-label="Split Horizontal">⫿</button>
+          <button id="btn-close-split" class="tb-btn" title="Fechar Divisão (Alt+Shift+W)" aria-label="Fechar Divisão">⊟</button>
+          <button id="btn-search" class="tb-btn" title="Buscar (Ctrl+Shift+F)" aria-label="Buscar">⌕</button>
+          <button id="btn-palette" class="tb-btn" title="Paleta de Comandos (Ctrl+Shift+P)" aria-label="Paleta de Comandos">⌘</button>
+          <button id="btn-always-on-top" class="tb-btn" title="Sempre no Topo (Ctrl+Shift+A)" aria-label="Sempre no Topo">📌</button>
+          <button id="btn-settings" class="tb-btn" title="Configurações (Ctrl+,)" aria-label="Configurações">⚙</button>
+        </div>
+
+        <div class="window-controls">
+          <button id="win-min" class="win-btn" title="Minimizar" aria-label="Minimizar">─</button>
+          <button id="win-max" class="win-btn" title="Maximizar / Restaurar" aria-label="Maximizar">□</button>
+          <button id="win-close" class="win-btn win-btn-close" title="Fechar" aria-label="Fechar">✕</button>
+        </div>
+      </header>
+
+      <!-- Barra de busca flutuante no terminal -->
+      <div id="search-bar" class="search-bar hidden">
+        <input id="search-input" type="text" autocomplete="off" spellcheck="false" placeholder="Buscar no terminal..." />
+        <label class="search-opt" title="Diferenciar maiúsculas/minúsculas">
+          <input id="search-case" type="checkbox" /> Aa
+        </label>
+        <label class="search-opt" title="Expressão regular">
+          <input id="search-regex" type="checkbox" /> .*
+        </label>
+        <button id="search-prev" class="search-nav-btn" title="Anterior">▲</button>
+        <button id="search-next" class="search-nav-btn" title="Próximo">▼</button>
+        <button id="search-close" class="search-nav-btn" title="Fechar (Esc)">✕</button>
+      </div>
+
+      <!-- Área principal de abas e splits + overlays WebGL/Canvas -->
+      <main id="workspace-stage" class="workspace-stage">
+        <div id="workspace-container" class="workspace-container"></div>
+        <canvas id="cursor-fx-canvas" class="fx-overlay-canvas" aria-hidden="true"></canvas>
+        <canvas id="shader-fx-canvas" class="fx-overlay-canvas shader-canvas" aria-hidden="true"></canvas>
+      </main>
+
+      <!-- Barra de status inferior discreta -->
+      <footer id="statusbar" class="statusbar">
+        <span id="status-profile" class="status-pill">PowerShell</span>
+        <span id="status-dims" class="status-pill">80×24</span>
+        <span id="status-theme" class="status-pill">Caju Cyberpunk</span>
+        <span class="status-spacer"></span>
+        <span id="status-fps" class="status-pill">60 FPS</span>
+        <span id="status-effects" class="status-pill status-glow">FX ON</span>
+      </footer>
+    </div>
+
+    <!-- Modal de Configurações e Paleta de Comandos -->
+    <div id="settings-root"></div>
+    <div id="palette-root"></div>
+    <style id="user-custom-css"></style>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

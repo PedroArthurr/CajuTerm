@@ -1,0 +1,32 @@
+{
+  "name": "cajuterm",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CajuTerm — Terminal GPU/WebGL altamente personalizável para Windows 10/11 com PowerShell e ConPTY",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "node scripts/tauri-runner.mjs",
+    "tauri:dev": "node scripts/tauri-runner.mjs dev",
+    "tauri:build": "node scripts/tauri-runner.mjs build",
+    "icons": "node scripts/generate-icons.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-image": "^0.8.0",
+    "@xterm/addon-ligatures": "^0.9.0",
+    "@xterm/addon-search": "^0.15.0",
+    "@xterm/addon-unicode11": "^0.8.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "^5.5.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
