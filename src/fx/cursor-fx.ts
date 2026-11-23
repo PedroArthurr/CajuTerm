@@ -18,6 +18,14 @@ interface Particle {
   color: string;
 }
 
+interface FloatingReaction {
+  x: number;
+  y: number;
+  vy: number;
+  emoji: string;
+  life: number;
+}
+
 export class CursorFxLayer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null;
@@ -28,6 +36,7 @@ export class CursorFxLayer {
   private currentCursor: CursorScreenPos | null = null;
   private trails: TrailSegment[] = [];
   private particles: Particle[] = [];
+  private reactions: FloatingReaction[] = [];
   private rafId: number | null = null;
   private accentColors = ['#ff2a85', '#00f0ff', '#ff7b00'];
 
@@ -103,6 +112,41 @@ export class CursorFxLayer {
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed - 0.6,
         size: 1.4 + Math.random() * 2.0,
+        life: 1.0,
+        color: this.accentColors[i % this.accentColors.length],
+      });
+    }
+    if (this.particles.length > 180) {
+      this.particles.splice(0, this.particles.length - 180);
+    }
+  }
+
+  public spawnReactionBurst(emoji: string, pos?: CursorScreenPos | null): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const target = pos ?? this.currentCursor;
+    const ox = target ? target.x - rect.left + target.cellWidth * 0.5 : rect.width * 0.5;
+    const oy = target ? target.y - rect.top : rect.height * 0.45;
+
+    this.reactions.push({
+      x: Math.max(28, Math.min(rect.width - 28, ox)),
+      y: Math.max(36, Math.min(rect.height - 20, oy)),
+      vy: -1.35,
+      emoji,
+      life: 1.0,
+    });
+    if (this.reactions.length > 18) {
+      this.reactions.shift();
+    }
+
+    for (let i = 0; i < 12; i++) {
+      const angle = (Math.PI * 2 * i) / 12 + Math.random() * 0.25;
+      const speed = 1.1 + Math.random() * 2.5;
+      this.particles.push({
+        x: ox,
+        y: oy,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 0.8,
+        size: 1.8 + Math.random() * 2.2,
         life: 1.0,
         color: this.accentColors[i % this.accentColors.length],
       });
@@ -194,6 +238,30 @@ export class CursorFxLayer {
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
         ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // 4. Emojis flutuantes de reações e notificações
+    if (this.reactions.length > 0) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let i = this.reactions.length - 1; i >= 0; i--) {
+        const r = this.reactions[i];
+        r.y += r.vy;
+        r.vy *= 0.985;
+        r.life -= 0.018;
+        if (r.life <= 0) {
+          this.reactions.splice(i, 1);
+          continue;
+        }
+        const scale = 0.9 + (1 - r.life) * 0.45;
+        ctx.globalAlpha = Math.min(1, r.life * 1.4);
+        ctx.font = `${Math.round(22 * scale)}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+        ctx.shadowColor = this.accentColors[0];
+        ctx.shadowBlur = 12;
+        ctx.fillText(r.emoji, r.x, r.y);
       }
       ctx.restore();
     }

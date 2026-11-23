@@ -76,6 +76,35 @@ export interface AnimationConfig {
   particleCount: number;
 }
 
+export type SoundPreset = 'cyberpunk' | 'arcade' | 'minimal' | 'scifi';
+
+export interface SoundConfig {
+  enabled: boolean;
+  preset: SoundPreset;
+  volume: number;
+  messageEnd: boolean;
+  idleThresholdMs: number;
+  bell: boolean;
+  errorAlert: boolean;
+  reactions: boolean;
+  typingTick: boolean;
+  snippetSend: boolean;
+}
+
+export type SnippetAgent = 'agy' | 'claude' | 'both';
+
+export interface SnippetItem {
+  id: string;
+  label: string;
+  command: string;
+  category: string;
+  description: string;
+  agent?: SnippetAgent;
+  aliases?: string[];
+  autoEnter?: boolean;
+  confirm?: boolean;
+}
+
 export interface ProfileConfig {
   id: string;
   name: string;
@@ -123,6 +152,11 @@ export interface AppSettings {
   shaders: ShaderConfig;
   cursor: CursorConfig;
   animations: AnimationConfig;
+  sounds: SoundConfig;
+  confirmClear: boolean;
+  activeSnippetAgent?: 'agy' | 'claude';
+  snippetUsage?: Record<string, number>;
+  customSnippets: SnippetItem[];
   profiles: ProfileConfig[];
   keybindings: KeybindingsConfig;
 }

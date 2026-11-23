@@ -37,6 +37,10 @@ export interface WorkspaceCallbacks {
   onTyping: (pos: CursorScreenPos) => void;
   onDimensionsChange: (cols: number, rows: number) => void;
   onTabsChanged: () => void;
+  onMessageEnd?: (pane: TerminalPane) => void;
+  onBell?: (pane: TerminalPane) => void;
+  onErrorDetected?: (pane: TerminalPane) => void;
+  onConfirmCommand?: (pane: TerminalPane, rawInput: string, resolvedCommand: string) => void;
 }
 
 export class WorkspaceManager {
@@ -325,6 +329,11 @@ export class WorkspaceManager {
           this.callbacks.onDimensionsChange(cols, rows);
         }
       },
+      onMessageEnd: (pane) => this.callbacks.onMessageEnd?.(pane),
+      onBell: (pane) => this.callbacks.onBell?.(pane),
+      onErrorDetected: (pane) => this.callbacks.onErrorDetected?.(pane),
+      onConfirmCommand: (pane, rawInput, resolvedCommand) =>
+        this.callbacks.onConfirmCommand?.(pane, rawInput, resolvedCommand),
     });
   }
 

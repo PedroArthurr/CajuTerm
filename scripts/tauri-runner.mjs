@@ -46,6 +46,49 @@ function hasMsvcBuildTools() {
   return Boolean(res.stdout && res.stdout.trim().length > 0);
 }
 
+function unlockRunningBinaries() {
+  if (process.platform !== 'win32') return;
+
+  for (const profile of ['release', 'debug']) {
+    const dir = path.resolve('src-tauri', 'target', profile);
+    if (!fs.existsSync(dir)) continue;
+
+    // Limpa cópias antigas que já não estão mais em execução
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (/^cajuterm\.old.*\.exe$/i.test(entry)) {
+          try {
+            fs.unlinkSync(path.join(dir, entry));
+          } catch {
+            // Ainda em uso por outra instância; ignora
+          }
+        }
+      }
+    } catch {
+      // Ignora erro de listagem
+    }
+
+    const exePath = path.join(dir, 'cajuterm.exe');
+    if (!fs.existsSync(exePath)) continue;
+
+    try {
+      const fd = fs.openSync(exePath, 'r+');
+      fs.closeSync(fd);
+    } catch (err) {
+      const code = err && typeof err === 'object' ? err.code : '';
+      if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY') {
+        const backupPath = path.join(dir, `cajuterm.old-${Date.now()}.exe`);
+        try {
+          fs.renameSync(exePath, backupPath);
+          console.log(`[CajuTerm] Binário em uso movido para ${path.basename(backupPath)} para permitir o build.`);
+        } catch (renameErr) {
+          console.warn(`[CajuTerm] Não foi possível liberar ${exePath} (feche o app aberto): ${renameErr.message}`);
+        }
+      }
+    }
+  }
+}
+
 const cargoDir = findCargoDir();
 
 if (!cargoDir) {
@@ -78,6 +121,10 @@ const tauriBin = path.resolve(
 );
 
 const args = process.argv.slice(2);
+if (args[0] === 'build' || args[0] === 'dev') {
+  unlockRunningBinaries();
+}
+
 const result = spawnSync(tauriBin, args, {
   stdio: 'inherit',
   shell: process.platform === 'win32',

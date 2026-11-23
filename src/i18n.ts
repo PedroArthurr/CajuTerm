@@ -9,6 +9,8 @@ export type TranslationKey =
   | 'btn.palette'
   | 'btn.alwaysOnTop'
   | 'btn.settings'
+  | 'btn.snippets'
+  | 'btn.sounds'
   | 'search.placeholder'
   | 'search.prev'
   | 'search.next'
@@ -21,6 +23,8 @@ export type TranslationKey =
   | 'settings.tab.background'
   | 'settings.tab.shaders'
   | 'settings.tab.cursor'
+  | 'settings.tab.sounds'
+  | 'settings.tab.snippets'
   | 'settings.tab.fonts'
   | 'settings.tab.profiles'
   | 'settings.tab.keybindings'
@@ -102,11 +106,13 @@ const DICT: Record<SupportedLanguage, Record<TranslationKey, string>> = {
     'btn.palette': 'Paleta de Comandos',
     'btn.alwaysOnTop': 'Sempre no Topo',
     'btn.settings': 'Configurações',
+    'btn.snippets': 'Snippets CLI & Comandos / (AGY & Claude)',
+    'btn.sounds': 'Efeitos de Som & Reações',
     'search.placeholder': 'Buscar no histórico e tela...',
     'search.prev': 'Ocorrência anterior',
     'search.next': 'Próxima ocorrência',
     'search.close': 'Fechar busca (Esc)',
-    'palette.placeholder': 'Digite um comando, tema ou perfil...',
+    'palette.placeholder': 'Digite um comando, snippet, reação, tema ou perfil...',
     'palette.empty': 'Nenhum comando encontrado.',
     'settings.title': 'Estúdio de Personalização CajuTerm',
     'settings.subtitle': 'Preview ao vivo + Hot-Reload em %APPDATA%\\CajuTerm',
@@ -114,6 +120,8 @@ const DICT: Record<SupportedLanguage, Record<TranslationKey, string>> = {
     'settings.tab.background': 'Fundo & Mídia',
     'settings.tab.shaders': 'Shaders WebGL',
     'settings.tab.cursor': 'Cursor & Partículas',
+    'settings.tab.sounds': 'Sons & Reações',
+    'settings.tab.snippets': 'Snippets & /',
     'settings.tab.fonts': 'Fontes (.ttf/.otf)',
     'settings.tab.profiles': 'Perfis de Shell',
     'settings.tab.keybindings': 'Atalhos',
@@ -194,11 +202,13 @@ const DICT: Record<SupportedLanguage, Record<TranslationKey, string>> = {
     'btn.palette': 'Command Palette',
     'btn.alwaysOnTop': 'Always on Top',
     'btn.settings': 'Settings',
+    'btn.snippets': 'CLI Snippets & / Commands (AGY & Claude)',
+    'btn.sounds': 'Sound FX & Reactions',
     'search.placeholder': 'Search terminal output...',
     'search.prev': 'Previous match',
     'search.next': 'Next match',
     'search.close': 'Close search (Esc)',
-    'palette.placeholder': 'Type a command, theme or profile...',
+    'palette.placeholder': 'Type a command, snippet, reaction, theme or profile...',
     'palette.empty': 'No matching commands.',
     'settings.title': 'CajuTerm Customization Studio',
     'settings.subtitle': 'Live preview + Hot-Reload at %APPDATA%\\CajuTerm',
@@ -206,6 +216,8 @@ const DICT: Record<SupportedLanguage, Record<TranslationKey, string>> = {
     'settings.tab.background': 'Background & Media',
     'settings.tab.shaders': 'WebGL Shaders',
     'settings.tab.cursor': 'Cursor & Particles',
+    'settings.tab.sounds': 'Sounds & Reactions',
+    'settings.tab.snippets': 'Snippets & /',
     'settings.tab.fonts': 'Fonts (.ttf/.otf)',
     'settings.tab.profiles': 'Shell Profiles',
     'settings.tab.keybindings': 'Keybindings',
@@ -286,11 +298,13 @@ const DICT: Record<SupportedLanguage, Record<TranslationKey, string>> = {
     'btn.palette': 'Paleta de Comandos',
     'btn.alwaysOnTop': 'Siempre Visible',
     'btn.settings': 'Configuración',
+    'btn.snippets': 'Snippets CLI y Comandos / (AGY y Claude)',
+    'btn.sounds': 'Efectos de Sonido y Reacciones',
     'search.placeholder': 'Buscar en la terminal...',
     'search.prev': 'Resultado anterior',
     'search.next': 'Siguiente resultado',
     'search.close': 'Cerrar búsqueda (Esc)',
-    'palette.placeholder': 'Escribe un comando, tema o perfil...',
+    'palette.placeholder': 'Escribe un comando, snippet, reacción, tema o perfil...',
     'palette.empty': 'No se encontraron comandos.',
     'settings.title': 'Estudio de Personalización CajuTerm',
     'settings.subtitle': 'Vista previa en vivo + Hot-Reload en %APPDATA%\\CajuTerm',
@@ -298,6 +312,8 @@ const DICT: Record<SupportedLanguage, Record<TranslationKey, string>> = {
     'settings.tab.background': 'Fondo y Multimedia',
     'settings.tab.shaders': 'Shaders WebGL',
     'settings.tab.cursor': 'Cursor y Partículas',
+    'settings.tab.sounds': 'Sonidos y Reacciones',
+    'settings.tab.snippets': 'Snippets y /',
     'settings.tab.fonts': 'Fuentes (.ttf/.otf)',
     'settings.tab.profiles': 'Perfiles de Shell',
     'settings.tab.keybindings': 'Atajos',

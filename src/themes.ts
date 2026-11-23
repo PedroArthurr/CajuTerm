@@ -247,6 +247,22 @@ export function DEFAULT_SETTINGS(): AppSettings {
       typingParticles: true,
       particleCount: 7,
     },
+    sounds: {
+      enabled: true,
+      preset: 'cyberpunk',
+      volume: 0.55,
+      messageEnd: true,
+      idleThresholdMs: 1100,
+      bell: true,
+      errorAlert: true,
+      reactions: true,
+      typingTick: false,
+      snippetSend: true,
+    },
+    confirmClear: true,
+    activeSnippetAgent: 'agy',
+    snippetUsage: {},
+    customSnippets: [],
     profiles: [
       {
         id: 'pwsh',
@@ -352,4 +368,65 @@ export function applyThemeCssVariables(theme: ThemeConfig, settings: AppSettings
   root.style.setProperty('--caju-blur', `${settings.blur}px`);
   root.style.setProperty('--caju-font', settings.fontFamily);
   root.style.setProperty('--caju-cursor-color', settings.cursor.color || theme.colors.cursor);
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+export function createColorSwatchDot(color: string, size = 16): HTMLSpanElement {
+  const dot = document.createElement('span');
+  dot.className = 'swatch-dot';
+  dot.title = color;
+  dot.style.backgroundColor = color;
+  dot.style.width = `${size}px`;
+  dot.style.height = `${size}px`;
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'swatch-svg');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const circle = document.createElementNS(SVG_NS, 'circle');
+  circle.setAttribute('cx', '8');
+  circle.setAttribute('cy', '8');
+  circle.setAttribute('r', '6.5');
+  circle.setAttribute('fill', color);
+  circle.setAttribute('stroke', 'rgba(255,255,255,0.35)');
+  circle.setAttribute('stroke-width', '1.2');
+
+  svg.appendChild(circle);
+  dot.appendChild(svg);
+  return dot;
+}
+
+export function createThemePreviewStrip(theme: ThemeConfig): SVGSVGElement {
+  const palette = [
+    theme.colors.background,
+    theme.colors.foreground,
+    theme.accent,
+    theme.accentSecondary,
+    theme.colors.red,
+    theme.colors.green,
+    theme.colors.yellow,
+    theme.colors.cyan,
+  ];
+  const width = palette.length * 24;
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'theme-preview-strip');
+  svg.setAttribute('viewBox', `0 0 ${width} 8`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+
+  palette.forEach((color, idx) => {
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', String(idx * 24));
+    rect.setAttribute('y', '0');
+    rect.setAttribute('width', '24');
+    rect.setAttribute('height', '8');
+    rect.setAttribute('fill', color);
+    svg.appendChild(rect);
+  });
+
+  return svg;
 }

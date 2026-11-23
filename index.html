@@ -60,6 +60,14 @@
             <button id="btn-paths-menu" class="tb-btn" title="Atalhos de Pastas (Paths)" aria-label="Atalhos de Pastas">📁</button>
             <div id="paths-dropdown" class="paths-dropdown hidden"></div>
           </div>
+          <div class="snippets-dropdown-wrap">
+            <button id="btn-snippets-menu" class="tb-btn" title="Snippets CLI & Comandos / (AGY & Claude)" aria-label="Snippets e Comandos Slash">⚡</button>
+            <div id="snippets-dropdown" class="snippets-dropdown hidden"></div>
+          </div>
+          <div class="sounds-dropdown-wrap">
+            <button id="btn-sounds-menu" class="tb-btn" title="Efeitos de Som & Reações" aria-label="Efeitos de Som e Reações">🔊</button>
+            <div id="sounds-dropdown" class="sounds-dropdown hidden"></div>
+          </div>
           <button id="btn-new-tab" class="tb-btn" title="Nova Aba (Ctrl+Shift+T)" aria-label="Nova Aba">+</button>
           <div class="profile-dropdown-wrap">
             <button id="btn-profile-menu" class="tb-btn tb-btn-small" title="Escolher Perfil" aria-label="Escolher Perfil">▾</button>
@@ -102,20 +110,25 @@
         <canvas id="shader-fx-canvas" class="fx-overlay-canvas shader-canvas" aria-hidden="true"></canvas>
       </main>
 
+      <!-- Dock de Snippets sempre visível + Barra inferior dos mais usados -->
+      <section id="snippets-dock" class="snippets-dock" aria-label="Barra de Snippets"></section>
+
       <!-- Barra de status inferior discreta -->
       <footer id="statusbar" class="statusbar">
         <span id="status-profile" class="status-pill">PowerShell</span>
         <span id="status-dims" class="status-pill">80×24</span>
         <span id="status-theme" class="status-pill">Caju Cyberpunk</span>
         <span class="status-spacer"></span>
+        <span id="status-sound" class="status-pill">SFX ON</span>
         <span id="status-fps" class="status-pill">60 FPS</span>
         <span id="status-effects" class="status-pill status-glow">FX ON</span>
       </footer>
     </div>
 
-    <!-- Modal de Configurações e Paleta de Comandos -->
+    <!-- Modal de Configurações, Paleta de Comandos e Confirmação -->
     <div id="settings-root"></div>
     <div id="palette-root"></div>
+    <div id="confirm-root"></div>
     <style id="user-custom-css"></style>
 
     <script type="module" src="/src/main.ts"></script>

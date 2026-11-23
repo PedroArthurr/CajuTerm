@@ -99,6 +99,71 @@ pub struct AnimationConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
+pub struct SoundConfig {
+    pub enabled: bool,
+    pub preset: String, // "cyberpunk" | "arcade" | "minimal" | "scifi"
+    pub volume: f32,
+    pub message_end: bool,
+    pub idle_threshold_ms: u32,
+    pub bell: bool,
+    pub error_alert: bool,
+    pub reactions: bool,
+    pub typing_tick: bool,
+    pub snippet_send: bool,
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            preset: "cyberpunk".to_string(),
+            volume: 0.55,
+            message_end: true,
+            idle_threshold_ms: 1100,
+            bell: true,
+            error_alert: true,
+            reactions: true,
+            typing_tick: false,
+            snippet_send: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
+pub struct SnippetItem {
+    pub id: String,
+    pub label: String,
+    pub command: String,
+    pub category: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub aliases: Vec<String>,
+    pub auto_enter: bool,
+    pub confirm: bool,
+}
+
+impl Default for SnippetItem {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            label: String::new(),
+            command: String::new(),
+            category: "Custom".to_string(),
+            description: String::new(),
+            agent: None,
+            aliases: Vec::new(),
+            auto_enter: true,
+            confirm: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileConfig {
     pub id: String,
     pub name: String,
@@ -151,6 +216,11 @@ pub struct AppSettings {
     pub shaders: ShaderConfig,
     pub cursor: CursorConfig,
     pub animations: AnimationConfig,
+    pub sounds: SoundConfig,
+    pub confirm_clear: bool,
+    pub active_snippet_agent: String,
+    pub snippet_usage: HashMap<String, u32>,
+    pub custom_snippets: Vec<SnippetItem>,
     pub profiles: Vec<ProfileConfig>,
     pub keybindings: KeybindingsConfig,
 }
@@ -231,6 +301,11 @@ impl Default for AppSettings {
                 typing_particles: true,
                 particle_count: 7,
             },
+            sounds: SoundConfig::default(),
+            confirm_clear: true,
+            active_snippet_agent: "agy".to_string(),
+            snippet_usage: HashMap::new(),
+            custom_snippets: Vec::new(),
             profiles: default_profiles(),
             keybindings: KeybindingsConfig {
                 new_tab: "Ctrl+Shift+T".to_string(),

@@ -1,10 +1,12 @@
 import { t } from '../i18n';
+import { createColorSwatchDot } from '../themes';
 
 export interface PaletteCommand {
   id: string;
   label: string;
   shortcut?: string;
   category?: string;
+  swatches?: string[];
   run: () => void;
 }
 
@@ -96,11 +98,24 @@ export class CommandPalette {
         row.type = 'button';
         row.className = `palette-item${idx === this.selectedIdx ? ' selected' : ''}`;
 
+        const leftWrap = document.createElement('span');
+        leftWrap.className = 'palette-item-left';
+
         const left = document.createElement('span');
         left.className = 'palette-item-label';
         left.textContent = cmd.category ? `[${cmd.category}] ${cmd.label}` : cmd.label;
+        leftWrap.appendChild(left);
 
-        row.appendChild(left);
+        if (cmd.swatches?.length) {
+          const swatchBar = document.createElement('span');
+          swatchBar.className = 'palette-swatches';
+          for (const color of cmd.swatches) {
+            swatchBar.appendChild(createColorSwatchDot(color, 11));
+          }
+          leftWrap.appendChild(swatchBar);
+        }
+
+        row.appendChild(leftWrap);
         if (cmd.shortcut) {
           const kbd = document.createElement('kbd');
           kbd.className = 'palette-kbd';

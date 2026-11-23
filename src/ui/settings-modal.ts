@@ -1,5 +1,7 @@
+import { REACTION_ITEMS, type ReactionKind } from '../fx/sound-fx';
 import { t } from '../i18n';
 import { importExternalTheme } from '../theme-importer';
+import { createColorSwatchDot, createThemePreviewStrip } from '../themes';
 import {
   installFontBase64,
   openConfigDir,
@@ -9,13 +11,15 @@ import {
   saveTheme,
   updateQuakeShortcut,
 } from '../terminal/pty-bridge';
-import type { AppSettings, ConfigBundle, ProfileConfig, ThemeConfig } from '../types';
+import type { AppSettings, ConfigBundle, ProfileConfig, SnippetItem, SoundPreset, ThemeConfig } from '../types';
 
 type SettingsTabId =
   | 'appearance'
   | 'background'
   | 'shaders'
   | 'cursor'
+  | 'sounds'
+  | 'snippets'
   | 'fonts'
   | 'profiles'
   | 'keybindings'
@@ -26,6 +30,7 @@ type SettingsTabId =
 export interface SettingsModalHooks {
   onLivePreview: (draft: AppSettings, themes: ThemeConfig[], customCss: string) => void;
   onBundleCommitted: (bundle: ConfigBundle) => void;
+  onTestSound?: (kind: 'messageEnd' | ReactionKind) => void;
 }
 
 export class SettingsModal {
@@ -144,6 +149,8 @@ export class SettingsModal {
       { id: 'background', label: t('settings.tab.background', lang) },
       { id: 'shaders', label: t('settings.tab.shaders', lang) },
       { id: 'cursor', label: t('settings.tab.cursor', lang) },
+      { id: 'sounds', label: t('settings.tab.sounds', lang) },
+      { id: 'snippets', label: t('settings.tab.snippets', lang) },
       { id: 'fonts', label: t('settings.tab.fonts', lang) },
       { id: 'profiles', label: t('settings.tab.profiles', lang) },
       { id: 'keybindings', label: t('settings.tab.keybindings', lang) },
@@ -211,24 +218,34 @@ export class SettingsModal {
         card.className = `theme-card${theme.id === this.draft.theme ? ' active' : ''}`;
         card.style.borderColor = theme.id === this.draft.theme ? theme.accent : '';
 
-        const swatches = [
+        const top = document.createElement('div');
+        top.className = 'theme-card-top';
+
+        const titleEl = document.createElement('strong');
+        titleEl.textContent = theme.name;
+
+        const badgeEl = document.createElement('span');
+        badgeEl.className = 'theme-badge';
+        badgeEl.textContent = theme.category;
+
+        top.append(titleEl, badgeEl);
+
+        const swatchesWrap = document.createElement('div');
+        swatchesWrap.className = 'theme-swatches';
+        for (const c of [
           theme.colors.background,
           theme.accent,
           theme.accentSecondary,
           theme.colors.green,
           theme.colors.yellow,
           theme.colors.cyan,
-        ]
-          .map((c) => `<span class="swatch-dot" style="background:${c}"></span>`)
-          .join('');
+        ]) {
+          swatchesWrap.appendChild(createColorSwatchDot(c, 16));
+        }
 
-        card.innerHTML = `
-          <div class="theme-card-top">
-            <strong>${theme.name}</strong>
-            <span class="theme-badge">${theme.category}</span>
-          </div>
-          <div class="theme-swatches">${swatches}</div>
-        `;
+        const previewStrip = createThemePreviewStrip(theme);
+
+        card.append(top, swatchesWrap, previewStrip);
         card.addEventListener('click', () => {
           this.draft.theme = theme.id;
           this.emitPreview();
@@ -503,6 +520,189 @@ export class SettingsModal {
           this.emitPreview();
         })
       );
+      return;
+    }
+
+    if (this.activeTab === 'sounds') {
+      const snd = this.draft.sounds;
+      container.appendChild(
+        this.makeToggleRow('Ativar Efeitos de Som (Master)', snd.enabled, (v) => {
+          snd.enabled = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeSelectRow('Estilo / Timbre Sonoro', snd.preset, [
+          { value: 'cyberpunk', label: 'Cyberpunk Synth' },
+          { value: 'arcade', label: 'Arcade 8-Bit' },
+          { value: 'minimal', label: 'Minimal Crystal' },
+          { value: 'scifi', label: 'Sci-Fi Holo' },
+        ], (val) => {
+          snd.preset = val as SoundPreset;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeSliderRow('Volume Geral', snd.volume, 0, 1, 0.05, (v) => {
+          snd.volume = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeToggleRow('Som de Fim de Mensagem (resposta do agente / comando longo)', snd.messageEnd, (v) => {
+          snd.messageEnd = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeSliderRow('Silêncio para Fim de Mensagem (ms)', snd.idleThresholdMs, 400, 4000, 100, (v) => {
+          snd.idleThresholdMs = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeToggleRow('Som de Bell / Pedido de Permissão (\\x07)', snd.bell, (v) => {
+          snd.bell = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeToggleRow('Alerta Sonoro ao Detectar Erro / Exit != 0', snd.errorAlert, (v) => {
+          snd.errorAlert = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeToggleRow('Efeitos Sonoros de Reações (Soundboard & Bursts)', snd.reactions, (v) => {
+          snd.reactions = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeToggleRow('Som ao Enviar Snippet / Comando', snd.snippetSend, (v) => {
+          snd.snippetSend = v;
+          this.emitPreview();
+        })
+      );
+      container.appendChild(
+        this.makeToggleRow('Som Mecânico Sutil ao Digitar', snd.typingTick, (v) => {
+          snd.typingTick = v;
+          this.emitPreview();
+        })
+      );
+
+      const testHeading = document.createElement('h3');
+      testHeading.className = 'section-heading';
+      testHeading.textContent = 'Testar Efeitos & Reações';
+      container.appendChild(testHeading);
+
+      const testRow = document.createElement('div');
+      testRow.className = 'installed-fonts-list';
+
+      const msgBtn = document.createElement('button');
+      msgBtn.type = 'button';
+      msgBtn.className = 'btn-secondary';
+      msgBtn.textContent = '✨ Fim de Mensagem';
+      msgBtn.addEventListener('click', () => this.hooks.onTestSound?.('messageEnd'));
+      testRow.appendChild(msgBtn);
+
+      for (const item of REACTION_ITEMS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn-secondary';
+        b.textContent = `${item.emoji} ${item.label}`;
+        b.title = item.title;
+        b.addEventListener('click', () => this.hooks.onTestSound?.(item.kind));
+        testRow.appendChild(b);
+      }
+
+      container.appendChild(testRow);
+      return;
+    }
+
+    if (this.activeTab === 'snippets') {
+      container.appendChild(
+        this.makeToggleRow('Pedir confirmação antes de executar /clear ou /cl3ar', this.draft.confirmClear, (v) => {
+          this.draft.confirmClear = v;
+          this.emitPreview();
+        })
+      );
+
+      const note = document.createElement('p');
+      note.className = 'muted-note';
+      note.textContent =
+        'Os snippets nativos (agy --dangerously-skip-permissions, claude --dangerously-skip-permissions, /clear e todos os comandos / de AGY e Claude Code) estão disponíveis no botão ⚡ da barra superior e em Ctrl+Shift+P.';
+      container.appendChild(note);
+
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'btn-primary';
+      addBtn.textContent = '+ Novo Snippet Personalizado';
+      addBtn.addEventListener('click', () => {
+        const item: SnippetItem = {
+          id: `custom-${Date.now()}`,
+          label: 'Meu Snippet',
+          command: 'agy --dangerously-skip-permissions',
+          category: 'Personalizados',
+          description: 'Atalho personalizado',
+          aliases: [],
+          autoEnter: true,
+          confirm: false,
+        };
+        this.draft.customSnippets.push(item);
+        this.emitPreview();
+        this.render();
+      });
+      container.appendChild(addBtn);
+
+      this.draft.customSnippets.forEach((snip, idx) => {
+        const card = document.createElement('div');
+        card.className = 'profile-editor-card';
+        card.innerHTML = `
+          <div class="profile-grid">
+            <label>Nome <input data-f="label" value="${escapeAttr(snip.label)}" /></label>
+            <label>Comando <input data-f="command" value="${escapeAttr(snip.command)}" /></label>
+            <label>Categoria <input data-f="category" value="${escapeAttr(snip.category)}" /></label>
+            <label>Aliases (vírgula) <input data-f="aliases" value="${escapeAttr((snip.aliases ?? []).join(', '))}" /></label>
+            <label>Descrição <input data-f="description" value="${escapeAttr(snip.description)}" /></label>
+            <div class="snippet-flags-row">
+              <label class="checkbox-label"><input type="checkbox" data-f="autoEnter" ${snip.autoEnter !== false ? 'checked' : ''} /> Enviar Enter automático</label>
+              <label class="checkbox-label"><input type="checkbox" data-f="confirm" ${snip.confirm ? 'checked' : ''} /> Pedir confirmação</label>
+            </div>
+          </div>
+        `;
+        card.querySelectorAll<HTMLInputElement>('input').forEach((inp) => {
+          const eventName = inp.type === 'checkbox' ? 'change' : 'input';
+          inp.addEventListener(eventName, () => {
+            const field = inp.dataset.f;
+            if (field === 'label') snip.label = inp.value;
+            if (field === 'command') snip.command = inp.value;
+            if (field === 'category') snip.category = inp.value || 'Personalizados';
+            if (field === 'description') snip.description = inp.value;
+            if (field === 'aliases') {
+              snip.aliases = inp.value
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean);
+            }
+            if (field === 'autoEnter') snip.autoEnter = inp.checked;
+            if (field === 'confirm') snip.confirm = inp.checked;
+            this.emitPreview();
+          });
+        });
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'btn-danger';
+        del.textContent = t('settings.profileDelete', lang);
+        del.addEventListener('click', () => {
+          this.draft.customSnippets.splice(idx, 1);
+          this.emitPreview();
+          this.render();
+        });
+        card.appendChild(del);
+        container.appendChild(card);
+      });
       return;
     }
 
