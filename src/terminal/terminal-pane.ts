@@ -541,6 +541,28 @@ export class TerminalPane {
       this.terminal.buffer.onBufferChange(update)
     );
 
+    // Viewport.handleWheel dispara scroll DOM com suppressScrollEvent=true (pula terminal.onScroll)
+    const viewportEl = this.element.querySelector<HTMLElement>('.xterm-viewport');
+    if (viewportEl) {
+      const onViewportScroll = () => {
+        this.scheduleScrollbarUpdate();
+        this.scheduleCursorReport();
+      };
+      viewportEl.addEventListener('scroll', onViewportScroll, { passive: true });
+      this.domCleanups.push(() => viewportEl.removeEventListener('scroll', onViewportScroll));
+    }
+
+    this.scrollbarEl.addEventListener(
+      'wheel',
+      (ev) => {
+        if (!ev.ctrlKey && viewportEl) {
+          viewportEl.scrollTop += ev.deltaMode === 1 ? ev.deltaY * 20 : ev.deltaY;
+          this.flashScrollbar();
+        }
+      },
+      { passive: true }
+    );
+
     this.element.addEventListener(
       'wheel',
       (ev) => {
@@ -624,6 +646,8 @@ export class TerminalPane {
     this.scrollbarEl.classList.toggle('has-scroll', metrics !== null);
     if (!metrics) {
       this.scrollbarEl.classList.remove('is-scrolled-up');
+      this.scrollThumbEl.style.height = '100%';
+      this.scrollThumbEl.style.transform = 'translateY(0)';
       return;
     }
     const viewportY = this.terminal.buffer.active.viewportY;

@@ -640,21 +640,30 @@ body {
   right: 3px;
   width: 12px;
   z-index: 5;
-  opacity: 0;
+  opacity: 0.28;
   pointer-events: none;
   cursor: default;
-  transition: opacity 260ms ease;
+  transition: opacity 220ms ease;
+}
+
+.term-scrollbar::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  width: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .term-scrollbar.has-scroll {
+  opacity: 0.85;
   pointer-events: auto;
 }
 
 .terminal-pane:hover .term-scrollbar.has-scroll,
-.term-scrollbar.has-scroll.is-scrolled-up {
-  opacity: 0.6;
-}
-
+.term-scrollbar.has-scroll.is-scrolled-up,
 .term-scrollbar.has-scroll.is-active,
 .term-scrollbar.has-scroll:hover,
 .term-scrollbar.has-scroll.is-dragging {
@@ -665,11 +674,11 @@ body {
 .term-scrollbar-thumb {
   position: absolute;
   top: 0;
-  right: 3px;
-  width: 4px;
+  right: 2px;
+  width: 6px;
   min-height: 28px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
+  background: color-mix(in srgb, var(--caju-accent-2) 50%, rgba(255, 255, 255, 0.45));
   will-change: transform;
   transition:
     width 140ms ease,
@@ -678,12 +687,52 @@ body {
     box-shadow 160ms ease;
 }
 
+.term-scrollbar:not(.has-scroll) .term-scrollbar-thumb {
+  opacity: 0.25;
+}
+
+.term-scrollbar.is-scrolled-up .term-scrollbar-thumb,
+.term-scrollbar.is-active .term-scrollbar-thumb,
 .term-scrollbar:hover .term-scrollbar-thumb,
 .term-scrollbar.is-dragging .term-scrollbar-thumb {
-  right: 2px;
-  width: 7px;
+  right: 1px;
+  width: 8px;
   background: var(--caju-accent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--caju-accent) 55%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--caju-accent) 60%, transparent);
+}
+
+/* Scrollbar padrão para painéis, listas e menus com rolagem */
+.settings-content::-webkit-scrollbar,
+.settings-nav::-webkit-scrollbar,
+.palette-list::-webkit-scrollbar,
+.profile-dropdown::-webkit-scrollbar,
+.sounds-dropdown::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-content::-webkit-scrollbar-track,
+.settings-nav::-webkit-scrollbar-track,
+.palette-list::-webkit-scrollbar-track,
+.profile-dropdown::-webkit-scrollbar-track,
+.sounds-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settings-content::-webkit-scrollbar-thumb,
+.settings-nav::-webkit-scrollbar-thumb,
+.palette-list::-webkit-scrollbar-thumb,
+.profile-dropdown::-webkit-scrollbar-thumb,
+.sounds-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+}
+
+.settings-content::-webkit-scrollbar-thumb:hover,
+.settings-nav::-webkit-scrollbar-thumb:hover,
+.palette-list::-webkit-scrollbar-thumb:hover,
+.profile-dropdown::-webkit-scrollbar-thumb:hover,
+.sounds-dropdown::-webkit-scrollbar-thumb:hover {
+  background: var(--caju-accent);
 }
 
 .split-divider {
