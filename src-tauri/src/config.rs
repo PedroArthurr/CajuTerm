@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
@@ -223,9 +223,12 @@ pub struct AppSettings {
     pub custom_snippets: Vec<SnippetItem>,
     pub profiles: Vec<ProfileConfig>,
     pub keybindings: KeybindingsConfig,
+    pub copy_on_select: bool,
+    /// Pastas do dock de atalhos. Um item terminando em `/*` lista as subpastas daquele diretório.
+    pub quick_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FontAsset {
     pub family: String,
@@ -242,11 +245,116 @@ pub struct ConfigBundle {
     pub custom_css: String,
     pub themes: Vec<ThemeConfig>,
     pub fonts: Vec<FontAsset>,
+    /// Presente quando settings.json no disco não pôde ser lido/parseado;
+    /// nesse caso `settings` contém a última configuração válida (ou os padrões).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_error: Option<String>,
 }
+
+/// Assinatura (nome, tamanho, mtime) dos arquivos de fonte para invalidar o cache base64.
+type FontSignature = Vec<(String, u64, Option<std::time::SystemTime>)>;
+
+/// Marcador de escrita própria: hash do conteúdo gravado (`None` = arquivo removido por nós).
+type SelfWriteMark = Option<u64>;
 
 pub struct ConfigState {
     pub config_dir: PathBuf,
     pub lock: Arc<Mutex<()>>,
+    last_good_settings: Mutex<Option<AppSettings>>,
+    self_writes: Mutex<HashMap<String, SelfWriteMark>>,
+    font_cache: Mutex<Option<(FontSignature, Vec<FontAsset>)>>,
+}
+
+pub const MAX_FONT_BYTES: usize = 20 * 1024 * 1024;
+const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "woff", "woff2"];
+
+fn content_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn is_temp_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(".tmp"))
+}
+
+/// Grava `bytes` em `<path>.tmp` e substitui `path` via rename (MoveFileEx REPLACE_EXISTING no Windows).
+/// Nunca deixa o arquivo final meio escrito.
+fn write_atomic_raw(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "caminho inválido"))?;
+    let tmp = path.with_file_name(format!("{file_name}.tmp"));
+
+    {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+
+    // Retry curto: editores/antivírus podem manter o destino aberto sem FILE_SHARE_DELETE.
+    let mut attempt = 0;
+    loop {
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < 5 => {
+                let _ = err;
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(err);
+            }
+        }
+    }
+}
+
+fn sanitize_font_file_name(raw: &str) -> Result<String, String> {
+    let base = Path::new(raw.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Nome de arquivo de fonte inválido".to_string())?;
+    let (stem, ext) = base
+        .rsplit_once('.')
+        .ok_or_else(|| "Arquivo de fonte sem extensão (use .ttf, .otf, .woff ou .woff2)".to_string())?;
+    let ext = ext.to_ascii_lowercase();
+    if !FONT_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!(
+            "Extensão de fonte não suportada '.{ext}' (use .ttf, .otf, .woff ou .woff2)"
+        ));
+    }
+
+    let cleaned: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '(' | ')' | '+') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(120)
+        .collect();
+    let cleaned = cleaned.trim_matches(|c: char| c == ' ' || c == '.').to_string();
+    if cleaned.is_empty() {
+        return Err("Nome de arquivo de fonte inválido".to_string());
+    }
+
+    let upper = cleaned.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && upper.as_bytes()[3].is_ascii_digit());
+    let cleaned = if reserved { format!("font-{cleaned}") } else { cleaned };
+
+    Ok(format!("{cleaned}.{ext}"))
 }
 
 impl Default for AppSettings {
@@ -325,8 +433,19 @@ impl Default for AppSettings {
                 toggle_always_on_top: "Ctrl+Shift+A".to_string(),
                 quake_global: "CommandOrControl+Backquote".to_string(),
             },
+            copy_on_select: false,
+            quick_paths: default_quick_paths(),
         }
     }
+}
+
+/// Equivalente exato da lista antes fixa em `list_quick_paths`.
+pub fn default_quick_paths() -> Vec<String> {
+    vec![
+        "Y:/virtus/virtus".to_string(),
+        "Y:/Github-PA".to_string(),
+        "Y:/Github-PA/*".to_string(),
+    ]
 }
 
 fn default_profiles() -> Vec<ProfileConfig> {
@@ -601,13 +720,13 @@ impl ConfigState {
             let defaults = AppSettings::default();
             let json = serde_json::to_string_pretty(&defaults)
                 .map_err(|e| format!("Falha ao serializar settings padrão: {e}"))?;
-            fs::write(&settings_path, json)
+            write_atomic_raw(&settings_path, json.as_bytes())
                 .map_err(|e| format!("Falha ao gravar settings.json inicial: {e}"))?;
         }
 
         let css_path = config_dir.join("custom.css");
         if !css_path.exists() {
-            fs::write(&css_path, DEFAULT_CUSTOM_CSS)
+            write_atomic_raw(&css_path, DEFAULT_CUSTOM_CSS.as_bytes())
                 .map_err(|e| format!("Falha ao gravar custom.css inicial: {e}"))?;
         }
 
@@ -615,7 +734,7 @@ impl ConfigState {
             let theme_path = themes_dir.join(format!("{}.json", sanitize_id(&theme.id)));
             if !theme_path.exists() {
                 if let Ok(json) = serde_json::to_string_pretty(&theme) {
-                    let _ = fs::write(theme_path, json);
+                    let _ = write_atomic_raw(&theme_path, json.as_bytes());
                 }
             }
         }
@@ -623,6 +742,9 @@ impl ConfigState {
         Ok(Self {
             config_dir,
             lock: Arc::new(Mutex::new(())),
+            last_good_settings: Mutex::new(None),
+            self_writes: Mutex::new(HashMap::new()),
+            font_cache: Mutex::new(None),
         })
     }
 
@@ -642,19 +764,24 @@ impl ConfigState {
         self.config_dir.join("fonts")
     }
 
+    fn settings_backup_path(&self) -> PathBuf {
+        self.config_dir.join("settings.json.invalid-backup")
+    }
+
     /// Lê settings.json, custom.css, temas e fontes do disco em um pacote único.
     pub fn load_bundle(&self) -> Result<ConfigBundle, String> {
         let _guard = self.lock.lock();
+        self.load_bundle_unlocked()
+    }
 
-        let raw_settings_json = match fs::read_to_string(self.settings_path()) {
-            Ok(content) => content,
-            Err(_) => serde_json::to_string_pretty(&AppSettings::default())
-                .map_err(|e| format!("Erro interno ao serializar settings: {e}"))?,
-        };
+    /// Lista de pastas rápidas configurada (`settings.quickPaths`).
+    pub fn quick_paths(&self) -> Vec<String> {
+        let _guard = self.lock.lock();
+        self.read_settings_unlocked().0.quick_paths
+    }
 
-        let settings: AppSettings = serde_json::from_str(&raw_settings_json)
-            .unwrap_or_else(|_| AppSettings::default());
-
+    fn load_bundle_unlocked(&self) -> Result<ConfigBundle, String> {
+        let (settings, raw_settings_json, settings_error) = self.read_settings_unlocked();
         let custom_css = fs::read_to_string(self.custom_css_path()).unwrap_or_default();
         let themes = self.load_themes_unlocked();
         let fonts = self.load_fonts_unlocked();
@@ -666,18 +793,98 @@ impl ConfigState {
             custom_css,
             themes,
             fonts,
+            settings_error,
         })
     }
 
-    pub fn save_settings(&self, settings: &AppSettings) -> Result<ConfigBundle, String> {
-        {
-            let _guard = self.lock.lock();
-            let json = serde_json::to_string_pretty(settings)
-                .map_err(|e| format!("Falha ao serializar configurações: {e}"))?;
-            fs::write(self.settings_path(), json)
-                .map_err(|e| format!("Falha ao salvar settings.json: {e}"))?;
+    /// Retorna (settings efetivas, JSON bruto, erro). Em falha de parse NÃO cai para os padrões:
+    /// usa a última configuração válida e sinaliza o erro, preservando o arquivo do usuário.
+    fn read_settings_unlocked(&self) -> (AppSettings, String, Option<String>) {
+        let fallback = || self.last_good_settings.lock().clone().unwrap_or_default();
+
+        match fs::read_to_string(self.settings_path()) {
+            Ok(content) => match serde_json::from_str::<AppSettings>(&content) {
+                Ok(settings) => {
+                    *self.last_good_settings.lock() = Some(settings.clone());
+                    (settings, content, None)
+                }
+                Err(e) => (
+                    fallback(),
+                    content,
+                    Some(format!("settings.json inválido (mantida a última configuração válida): {e}")),
+                ),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let defaults = AppSettings::default();
+                let raw = serde_json::to_string_pretty(&defaults).unwrap_or_default();
+                (defaults, raw, None)
+            }
+            Err(e) => {
+                let settings = fallback();
+                let raw = serde_json::to_string_pretty(&settings).unwrap_or_default();
+                (settings, raw, Some(format!("Falha ao ler settings.json: {e}")))
+            }
         }
-        self.load_bundle()
+    }
+
+    fn path_key(path: &Path) -> String {
+        path.to_string_lossy().replace('/', "\\").to_lowercase()
+    }
+
+    /// Grava atomicamente e registra a escrita para o watcher não re-emitir `config-reloaded`.
+    fn write_tracked(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let key = Self::path_key(path);
+        self.self_writes.lock().insert(key.clone(), Some(content_hash(bytes)));
+        let result = write_atomic_raw(path, bytes);
+        if result.is_err() {
+            self.self_writes.lock().remove(&key);
+        }
+        result
+    }
+
+    fn remove_tracked(&self, path: &Path) -> std::io::Result<()> {
+        let key = Self::path_key(path);
+        self.self_writes.lock().insert(key.clone(), None);
+        let result = fs::remove_file(path);
+        if result.is_err() {
+            self.self_writes.lock().remove(&key);
+        }
+        result
+    }
+
+    /// `true` se o estado atual de `path` é exatamente o que o próprio app gravou/removeu.
+    fn is_self_write(&self, path: &Path) -> bool {
+        let mark = match self.self_writes.lock().get(&Self::path_key(path)) {
+            Some(mark) => *mark,
+            None => return false,
+        };
+        match mark {
+            Some(hash) => fs::read(path)
+                .map(|bytes| content_hash(&bytes) == hash)
+                .unwrap_or(false),
+            None => !path.exists(),
+        }
+    }
+
+    pub fn save_settings(&self, settings: &AppSettings) -> Result<ConfigBundle, String> {
+        let _guard = self.lock.lock();
+        let json = serde_json::to_string_pretty(settings)
+            .map_err(|e| format!("Falha ao serializar configurações: {e}"))?;
+
+        // Se o arquivo atual estiver inválido (ex.: edição manual em andamento), guarda uma cópia
+        // antes de sobrescrever, para não perder o conteúdo do usuário.
+        let path = self.settings_path();
+        if let Ok(current) = fs::read_to_string(&path) {
+            if !current.trim().is_empty() && serde_json::from_str::<AppSettings>(&current).is_err() {
+                self.write_tracked(&self.settings_backup_path(), current.as_bytes())
+                    .map_err(|e| format!("Falha ao salvar backup do settings.json inválido: {e}"))?;
+            }
+        }
+
+        self.write_tracked(&path, json.as_bytes())
+            .map_err(|e| format!("Falha ao salvar settings.json: {e}"))?;
+        *self.last_good_settings.lock() = Some(settings.clone());
+        self.load_bundle_unlocked()
     }
 
     pub fn save_raw_settings(&self, raw_json: &str) -> Result<ConfigBundle, String> {
@@ -687,48 +894,51 @@ impl ConfigState {
     }
 
     pub fn save_custom_css(&self, css: &str) -> Result<ConfigBundle, String> {
-        {
-            let _guard = self.lock.lock();
-            fs::write(self.custom_css_path(), css)
-                .map_err(|e| format!("Falha ao salvar custom.css: {e}"))?;
-        }
-        self.load_bundle()
+        let _guard = self.lock.lock();
+        self.write_tracked(&self.custom_css_path(), css.as_bytes())
+            .map_err(|e| format!("Falha ao salvar custom.css: {e}"))?;
+        self.load_bundle_unlocked()
     }
 
     pub fn save_theme(&self, theme: &ThemeConfig) -> Result<ConfigBundle, String> {
-        {
-            let _guard = self.lock.lock();
-            let file_name = format!("{}.json", sanitize_id(&theme.id));
-            let path = self.themes_dir().join(file_name);
-            let json = serde_json::to_string_pretty(theme)
-                .map_err(|e| format!("Falha ao serializar tema: {e}"))?;
-            fs::write(path, json).map_err(|e| format!("Falha ao salvar tema: {e}"))?;
-        }
-        self.load_bundle()
+        let _guard = self.lock.lock();
+        let path = self
+            .themes_dir()
+            .join(format!("{}.json", sanitize_id(&theme.id)));
+        let json = serde_json::to_string_pretty(theme)
+            .map_err(|e| format!("Falha ao serializar tema: {e}"))?;
+        self.write_tracked(&path, json.as_bytes())
+            .map_err(|e| format!("Falha ao salvar tema: {e}"))?;
+        self.load_bundle_unlocked()
     }
 
     pub fn delete_theme(&self, theme_id: &str) -> Result<ConfigBundle, String> {
-        {
-            let _guard = self.lock.lock();
-            let path = self.themes_dir().join(format!("{}.json", sanitize_id(theme_id)));
-            if path.exists() {
-                fs::remove_file(path).map_err(|e| format!("Falha ao remover tema: {e}"))?;
-            }
+        let _guard = self.lock.lock();
+        let path = self
+            .themes_dir()
+            .join(format!("{}.json", sanitize_id(theme_id)));
+        if path.exists() {
+            self.remove_tracked(&path)
+                .map_err(|e| format!("Falha ao remover tema: {e}"))?;
         }
-        self.load_bundle()
+        self.load_bundle_unlocked()
     }
 
     pub fn save_font_bytes(&self, file_name: &str, bytes: &[u8]) -> Result<ConfigBundle, String> {
-        {
-            let _guard = self.lock.lock();
-            let safe_name = Path::new(file_name)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| "Nome de arquivo de fonte inválido".to_string())?;
-            let path = self.fonts_dir().join(safe_name);
-            fs::write(path, bytes).map_err(|e| format!("Falha ao salvar fonte: {e}"))?;
+        if bytes.len() > MAX_FONT_BYTES {
+            return Err(format!(
+                "Arquivo de fonte muito grande ({:.1} MB; limite {} MB)",
+                bytes.len() as f64 / (1024.0 * 1024.0),
+                MAX_FONT_BYTES / (1024 * 1024)
+            ));
         }
-        self.load_bundle()
+        let safe_name = sanitize_font_file_name(file_name)?;
+
+        let _guard = self.lock.lock();
+        let path = self.fonts_dir().join(safe_name);
+        self.write_tracked(&path, bytes)
+            .map_err(|e| format!("Falha ao salvar fonte: {e}"))?;
+        self.load_bundle_unlocked()
     }
 
     fn load_themes_unlocked(&self) -> Vec<ThemeConfig> {
@@ -755,10 +965,14 @@ impl ConfigState {
         list
     }
 
+    /// Fontes como data URLs. O base64 é cacheado e só recalculado quando a assinatura
+    /// (nome/tamanho/mtime) da pasta fonts/ muda.
     fn load_fonts_unlocked(&self) -> Vec<FontAsset> {
         use base64::Engine;
 
-        let mut fonts = Vec::new();
+        let mut files: Vec<(PathBuf, String, String, &'static str)> = Vec::new();
+        let mut signature: FontSignature = Vec::new();
+
         if let Ok(entries) = fs::read_dir(self.fonts_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -775,34 +989,59 @@ impl ConfigState {
                     _ => continue,
                 };
 
-                if let (Some(stem), Some(file_name), Ok(bytes)) = (
-                    path.file_stem().and_then(|s| s.to_str()),
-                    path.file_name().and_then(|s| s.to_str()),
-                    fs::read(&path),
-                ) {
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    fonts.push(FontAsset {
-                        family: stem.to_string(),
-                        file_name: file_name.to_string(),
-                        data_url: format!("data:{mime};base64,{encoded}"),
-                    });
+                let (Some(stem), Some(file_name)) = (
+                    path.file_stem().and_then(|s| s.to_str()).map(str::to_string),
+                    path.file_name().and_then(|s| s.to_str()).map(str::to_string),
+                ) else {
+                    continue;
+                };
+                let Ok(meta) = entry.metadata() else { continue };
+                if !meta.is_file() {
+                    continue;
                 }
+
+                signature.push((file_name.clone(), meta.len(), meta.modified().ok()));
+                files.push((path, stem, file_name, mime));
             }
         }
+
+        signature.sort();
+        files.sort_by(|a, b| a.2.cmp(&b.2));
+
+        if let Some((cached_sig, cached_fonts)) = self.font_cache.lock().as_ref() {
+            if *cached_sig == signature {
+                return cached_fonts.clone();
+            }
+        }
+
+        let mut fonts = Vec::with_capacity(files.len());
+        for (path, stem, file_name, mime) in files {
+            if let Ok(bytes) = fs::read(&path) {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                fonts.push(FontAsset {
+                    family: stem,
+                    file_name,
+                    data_url: format!("data:{mime};base64,{encoded}"),
+                });
+            }
+        }
+
+        *self.font_cache.lock() = Some((signature, fonts.clone()));
         fonts
     }
 }
 
 /// Inicia watcher `notify` com debounce de 80 ms para hot-reload de settings.json, custom.css, temas e fontes.
+/// Ignora arquivos temporários, escritas do próprio app e settings.json inválido (não emite nesse caso).
 pub fn start_config_watcher(app: AppHandle, state: Arc<ConfigState>) -> Result<(), String> {
     let watch_dir = state.config_dir.clone();
-    let (tx, rx) = mpsc::channel::<()>();
+    let (tx, rx) = mpsc::channel::<Vec<PathBuf>>();
 
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             match event.kind {
                 EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                    let _ = tx.send(());
+                    let _ = tx.send(event.paths);
                 }
                 _ => {}
             }
@@ -821,10 +1060,8 @@ pub fn start_config_watcher(app: AppHandle, state: Arc<ConfigState>) -> Result<(
             let _keep_alive = watcher;
             let debounce = Duration::from_millis(80);
 
-            loop {
-                if rx.recv().is_err() {
-                    break;
-                }
+            while let Ok(first) = rx.recv() {
+                let mut changed: HashSet<PathBuf> = first.into_iter().collect();
 
                 let mut deadline = Instant::now() + debounce;
                 loop {
@@ -833,14 +1070,33 @@ pub fn start_config_watcher(app: AppHandle, state: Arc<ConfigState>) -> Result<(
                         break;
                     }
                     match rx.recv_timeout(deadline - now) {
-                        Ok(()) => deadline = Instant::now() + debounce,
+                        Ok(paths) => {
+                            changed.extend(paths);
+                            deadline = Instant::now() + debounce;
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => break,
                         Err(mpsc::RecvTimeoutError::Disconnected) => return,
                     }
                 }
 
-                if let Ok(bundle) = state.load_bundle() {
-                    let _ = app.emit("config-reloaded", bundle);
+                let external_change = changed
+                    .iter()
+                    .any(|p| !is_temp_path(p) && !p.is_dir() && !state.is_self_write(p));
+                if !external_change {
+                    continue;
+                }
+
+                match state.load_bundle() {
+                    Ok(bundle) if bundle.settings_error.is_none() => {
+                        let _ = app.emit("config-reloaded", bundle);
+                    }
+                    Ok(bundle) => {
+                        eprintln!(
+                            "Aviso: hot-reload ignorado: {}",
+                            bundle.settings_error.unwrap_or_default()
+                        );
+                    }
+                    Err(err) => eprintln!("Aviso: hot-reload falhou: {err}"),
                 }
             }
         })
@@ -864,5 +1120,28 @@ fn sanitize_id(input: &str) -> String {
         "custom-theme".to_string()
     } else {
         cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_name_sanitization() {
+        assert_eq!(sanitize_font_file_name("..\\..\\evil.TTF").unwrap(), "evil.ttf");
+        assert_eq!(sanitize_font_file_name("a/b/My Font<1>.woff2").unwrap(), "My Font_1_.woff2");
+        assert_eq!(sanitize_font_file_name("con.otf").unwrap(), "font-con.otf");
+        assert!(sanitize_font_file_name("x.exe").is_err());
+        assert!(sanitize_font_file_name("..").is_err());
+        assert!(sanitize_font_file_name("noext").is_err());
+    }
+
+    #[test]
+    fn old_settings_without_new_fields_still_load() {
+        let s: AppSettings = serde_json::from_str(r#"{"fontSize": 16}"#).unwrap();
+        assert_eq!(s.font_size, 16.0);
+        assert!(!s.copy_on_select);
+        assert_eq!(s.quick_paths, default_quick_paths());
     }
 }

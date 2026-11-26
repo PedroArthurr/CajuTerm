@@ -1,9 +1,18 @@
 import './styles/main.css';
 
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { CursorFxLayer } from './fx/cursor-fx';
 import { ShaderOverlay } from './fx/shader-overlay';
 import { REACTION_ITEMS, SoundFxEngine, type ReactionKind } from './fx/sound-fx';
-import { t } from './i18n';
+import { normalizeLang, t } from './i18n';
+import { formatShortcut, matchesShortcut } from './shortcuts';
+import {
+  mergeUsageMaps,
+  readInitialAgent,
+  readStoredUsage,
+  writeSnippetStateToStorage,
+  type ActiveSnippetAgent,
+} from './snippet-store';
 import {
   getAllSnippets,
   getSnippetAgent,
@@ -14,10 +23,9 @@ import {
 import {
   applyWindowVibrancy,
   getConfigBundle,
+  isTauriRuntime,
   listQuickPaths,
   onConfigReloaded,
-  onPtyExit,
-  onPtyOutput,
   saveSettings,
   toggleQuakeMode,
   windowClose,
@@ -26,18 +34,23 @@ import {
   windowStartDragging,
   windowToggleMaximize,
 } from './terminal/pty-bridge';
+import type { TerminalPane } from './terminal/terminal-pane';
 import { WorkspaceManager } from './terminal/workspace';
 import { applyThemeCssVariables, BUILTIN_THEMES, hexToRgbTuple } from './themes';
 import type {
   AppSettings,
   ConfigBundle,
   FontAsset,
+  KeybindingsConfig,
   QuickPathEntry,
   SnippetItem,
   SoundPreset,
   ThemeConfig,
 } from './types';
+import { showAppToast } from './ui/app-toast';
 import { CommandPalette, type PaletteCommand } from './ui/command-palette';
+import { ConfirmModal } from './ui/confirm-modal';
+import { hidePopover, isPopoverShown, setModalFocusRestorer, showPopover } from './ui/modal-utils';
 import { SettingsModal } from './ui/settings-modal';
 
 const loadedFontKeys = new Set<string>();
@@ -55,28 +68,6 @@ async function loadUserFonts(fonts: FontAsset[]): Promise<void> {
       console.warn(`Não foi possível carregar fonte ${font.fileName}:`, err);
     }
   }
-}
-
-function matchesShortcut(ev: KeyboardEvent, combo: string): boolean {
-  if (!combo.trim()) return false;
-  const parts = combo.split('+').map((p) => p.trim().toLowerCase());
-  const mainKey = parts[parts.length - 1];
-
-  const needCtrl = parts.includes('ctrl') || parts.includes('control') || parts.includes('commandorcontrol');
-  const needShift = parts.includes('shift');
-  const needAlt = parts.includes('alt');
-
-  if (ev.ctrlKey !== needCtrl) return false;
-  if (ev.shiftKey !== needShift) return false;
-  if (ev.altKey !== needAlt) return false;
-
-  const evKey = ev.key.toLowerCase();
-  if (mainKey === 'backquote' || mainKey === '`') {
-    return ev.code === 'Backquote' || evKey === '`';
-  }
-  if (mainKey === 'tab') return evKey === 'tab';
-  if (mainKey === ',') return evKey === ',';
-  return evKey === mainKey || ev.code.toLowerCase() === mainKey;
 }
 
 function applyBackgroundLayer(settings: AppSettings): void {
@@ -116,7 +107,7 @@ function applyBackgroundLayer(settings: AppSettings): void {
             })
           : Object.assign(document.createElement('img'), {
               src: bg.mediaDataUrl,
-              alt: bg.mediaName || 'Fundo',
+              alt: bg.mediaName || '',
             });
       mediaSlot.dataset.mediaKey = nextKey;
       mediaSlot.appendChild(el);
@@ -131,10 +122,22 @@ function applyBackgroundLayer(settings: AppSettings): void {
 
 function applyCustomCss(css: string): void {
   const styleEl = document.getElementById('user-custom-css');
-  if (styleEl) {
+  // Evita recalcular estilos a cada tick de preview quando o CSS não mudou
+  if (styleEl && styleEl.textContent !== css) {
     styleEl.textContent = css;
   }
 }
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** Dropdowns da barra de título e o botão que abre cada um. */
+const DROPDOWNS = [
+  { id: 'profile-dropdown', btn: 'btn-profile-menu' },
+  { id: 'paths-dropdown', btn: 'btn-paths-menu' },
+  { id: 'snippets-dropdown', btn: 'btn-snippets-menu' },
+  { id: 'sounds-dropdown', btn: 'btn-sounds-menu' },
+] as const;
+type DropdownId = (typeof DROPDOWNS)[number]['id'];
 
 async function bootstrap(): Promise<void> {
   let bundle: ConfigBundle = await getConfigBundle();
@@ -149,6 +152,7 @@ async function bootstrap(): Promise<void> {
   const searchInput = document.getElementById('search-input') as HTMLInputElement;
   const searchCase = document.getElementById('search-case') as HTMLInputElement;
   const searchRegex = document.getElementById('search-regex') as HTMLInputElement;
+  const searchCount = document.getElementById('search-count');
   const statusFps = document.getElementById('status-fps')!;
   const statusSound = document.getElementById('status-sound')!;
   const statusEffects = document.getElementById('status-effects')!;
@@ -156,7 +160,9 @@ async function bootstrap(): Promise<void> {
   const statusDims = document.getElementById('status-dims')!;
   const statusTheme = document.getElementById('status-theme')!;
   const btnAlwaysOnTop = document.getElementById('btn-always-on-top')!;
-  const confirmRoot = document.getElementById('confirm-root')!;
+  const appEl = document.getElementById('app');
+
+  const lang = (): string => bundle.settings.language;
 
   const resolveTheme = (settings: AppSettings, themes: ThemeConfig[]): ThemeConfig => {
     return (
@@ -164,6 +170,16 @@ async function bootstrap(): Promise<void> {
       themes[0] ??
       BUILTIN_THEMES[0]
     );
+  };
+
+  // Erro de leitura do settings.json (backend manteve o último válido): toast uma vez por erro
+  let lastSettingsError = '';
+  const reportSettingsError = (b: ConfigBundle): void => {
+    const err = b.settingsError ?? '';
+    if (err && err !== lastSettingsError) {
+      showAppToast(`${t('app.settingsError', b.settings.language)} ${err}`, 'error', 8000);
+    }
+    lastSettingsError = err;
   };
 
   const shaderOverlay = new ShaderOverlay(shaderCanvas, bundle.settings.shaders, (fps) => {
@@ -176,134 +192,168 @@ async function bootstrap(): Promise<void> {
   );
   const soundFx = new SoundFxEngine(bundle.settings.sounds);
 
-  let confirmActions: { confirm: () => void; cancel: () => void } | null = null;
-  const isConfirmOpen = (): boolean => confirmActions !== null;
+  const confirmModal = new ConfirmModal(document.getElementById('confirm-root')!, lang);
 
-  const closeAllTitlebarDropdowns = (exceptId?: string): void => {
-    const ids = ['profile-dropdown', 'paths-dropdown', 'snippets-dropdown', 'sounds-dropdown'];
-    for (const id of ids) {
-      if (id !== exceptId) {
-        document.getElementById(id)?.classList.add('hidden');
-      }
+  const focusActivePane = (): void => {
+    workspace.getActivePane()?.focus();
+  };
+  setModalFocusRestorer(focusActivePane);
+
+  /* ---------------------------- Dropdowns ---------------------------- */
+
+  const getDropdown = (id: DropdownId): HTMLElement | null => document.getElementById(id);
+
+  const setDropdownExpanded = (id: DropdownId, expanded: boolean): void => {
+    const def = DROPDOWNS.find((d) => d.id === id);
+    if (def) document.getElementById(def.btn)?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  };
+
+  const closeDropdown = (id: DropdownId, refocus = false): void => {
+    const el = getDropdown(id);
+    if (el) hidePopover(el);
+    setDropdownExpanded(id, false);
+    if (refocus) focusActivePane();
+  };
+
+  const closeAllTitlebarDropdowns = (exceptId?: DropdownId): void => {
+    for (const { id } of DROPDOWNS) {
+      if (id !== exceptId && isPopoverShown(getDropdown(id))) closeDropdown(id);
     }
   };
 
-  const openConfirmModal = (opts: {
-    title: string;
-    message: string;
-    commandPreview: string;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    onConfirm: () => void;
-    onCancel?: () => void;
-  }): void => {
-    confirmRoot.innerHTML = '';
+  const openDropdownId = (): DropdownId | undefined =>
+    DROPDOWNS.find(({ id }) => isPopoverShown(getDropdown(id)))?.id;
 
-    const backdrop = document.createElement('div');
-    backdrop.className = 'confirm-backdrop';
-
-    const box = document.createElement('div');
-    box.className = 'confirm-box';
-
-    const titleEl = document.createElement('h3');
-    titleEl.className = 'confirm-title';
-    titleEl.textContent = opts.title;
-
-    const msgEl = document.createElement('p');
-    msgEl.className = 'confirm-message';
-    msgEl.textContent = opts.message;
-
-    const codeEl = document.createElement('code');
-    codeEl.className = 'confirm-code';
-    codeEl.textContent = opts.commandPreview;
-
-    const actions = document.createElement('div');
-    actions.className = 'confirm-actions';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'btn-secondary';
-    cancelBtn.textContent = opts.cancelLabel ?? 'Cancelar (Esc)';
-
-    const okBtn = document.createElement('button');
-    okBtn.type = 'button';
-    okBtn.className = 'btn-primary';
-    okBtn.textContent = opts.confirmLabel ?? 'Executar (Enter)';
-
-    const cleanup = (confirmed: boolean) => {
-      confirmRoot.innerHTML = '';
-      confirmActions = null;
-      if (confirmed) {
-        opts.onConfirm();
-      } else {
-        opts.onCancel?.();
-      }
-      workspace.getActivePane()?.focus();
-    };
-
-    confirmActions = {
-      confirm: () => cleanup(true),
-      cancel: () => cleanup(false),
-    };
-
-    backdrop.addEventListener('click', (ev) => {
-      if (ev.target === backdrop) cleanup(false);
-    });
-    cancelBtn.addEventListener('click', () => cleanup(false));
-    okBtn.addEventListener('click', () => cleanup(true));
-
-    actions.append(cancelBtn, okBtn);
-    box.append(titleEl, msgEl, codeEl, actions);
-    backdrop.appendChild(box);
-    confirmRoot.appendChild(backdrop);
-
-    requestAnimationFrame(() => okBtn.focus());
+  const toggleDropdown = (id: DropdownId, onOpen?: () => void): void => {
+    closeAllTitlebarDropdowns(id);
+    const el = getDropdown(id);
+    if (!el) return;
+    if (isPopoverShown(el)) {
+      closeDropdown(id);
+      return;
+    }
+    showPopover(el);
+    setDropdownExpanded(id, true);
+    onOpen?.();
   };
 
-  const hasOpenOverlay = (): boolean => {
-    const profileOpen = !document.getElementById('profile-dropdown')?.classList.contains('hidden');
-    const pathsOpen = !document.getElementById('paths-dropdown')?.classList.contains('hidden');
-    const snippetsOpen = !document.getElementById('snippets-dropdown')?.classList.contains('hidden');
-    const soundsOpen = !document.getElementById('sounds-dropdown')?.classList.contains('hidden');
-    const searchOpen = !searchBar.classList.contains('hidden');
-    return (
-      profileOpen ||
-      pathsOpen ||
-      snippetsOpen ||
-      soundsOpen ||
-      searchOpen ||
-      palette.isPaletteOpen() ||
-      settingsModal.isModalOpen() ||
-      isConfirmOpen()
-    );
+  const isSearchOpen = (): boolean => isPopoverShown(searchBar);
+
+  const hasOpenOverlay = (): boolean =>
+    openDropdownId() !== undefined ||
+    isSearchOpen() ||
+    palette.isPaletteOpen() ||
+    settingsModal.isModalOpen() ||
+    confirmModal.isOpen();
+
+  /* ---------------------------- Atalhos ------------------------------ */
+
+  interface ShortcutEntry {
+    combo: string;
+    run: () => void;
+  }
+
+  /** Tabela única de atalhos do app: usada pelo despacho e pelo isAppShortcut do xterm. */
+  const shortcutEntries = (): ShortcutEntry[] => {
+    const kb = bundle.settings.keybindings;
+    return [
+      { combo: kb.commandPalette, run: () => togglePalette() },
+      { combo: kb.openSettings, run: () => toggleSettings() },
+      { combo: kb.find, run: () => openSearch() },
+      { combo: kb.newTab, run: () => void workspace.createTab() },
+      {
+        combo: kb.closeTab,
+        run: () => {
+          if (workspace.hasMultiplePanesInActiveTab()) workspace.closeActivePane();
+          else workspace.closeTab();
+        },
+      },
+      { combo: kb.nextTab, run: () => workspace.cycleTab(1) },
+      { combo: kb.prevTab, run: () => workspace.cycleTab(-1) },
+      { combo: kb.splitVertical, run: () => workspace.splitActive('vertical') },
+      { combo: kb.splitHorizontal, run: () => workspace.splitActive('horizontal') },
+      { combo: kb.closePane, run: () => workspace.closeActivePane() },
+      { combo: kb.focusLeft, run: () => workspace.focusDirection('left') },
+      { combo: kb.focusRight, run: () => workspace.focusDirection('right') },
+      { combo: kb.focusUp, run: () => workspace.focusDirection('up') },
+      { combo: kb.focusDown, run: () => workspace.focusDirection('down') },
+      { combo: kb.toggleAlwaysOnTop, run: () => void toggleAlwaysOnTop() },
+      ...bundle.settings.profiles
+        .filter((p) => !!p.shortcut)
+        .map((p) => ({ combo: p.shortcut, run: () => void workspace.createTab(p) })),
+    ];
+  };
+
+  const findShortcut = (ev: KeyboardEvent): ShortcutEntry | undefined => {
+    if (ev.type !== 'keydown') return undefined;
+    return shortcutEntries().find((entry) => !!entry.combo && matchesShortcut(ev, entry.combo));
   };
 
   const isAppShortcut = (ev: KeyboardEvent): boolean => {
     if (ev.type !== 'keydown') return false;
-    if (ev.key === 'Escape' && hasOpenOverlay()) {
-      return true;
-    }
-    const kb = bundle.settings.keybindings;
-    const list = [
-      kb.newTab,
-      kb.closeTab,
-      kb.nextTab,
-      kb.prevTab,
-      kb.splitVertical,
-      kb.splitHorizontal,
-      kb.closePane,
-      kb.focusLeft,
-      kb.focusRight,
-      kb.focusUp,
-      kb.focusDown,
-      kb.find,
-      kb.commandPalette,
-      kb.openSettings,
-      kb.toggleAlwaysOnTop,
-      ...bundle.settings.profiles.map((p) => p.shortcut).filter(Boolean),
-    ];
-    return list.some((combo) => matchesShortcut(ev, combo));
+    if (ev.key === 'Escape' && hasOpenOverlay()) return true;
+    return findShortcut(ev) !== undefined;
   };
+
+  /* ---------------------------- Busca -------------------------------- */
+
+  const renderSearchCount = (
+    r: { resultIndex: number; resultCount: number } | null,
+    invalid = false
+  ): void => {
+    if (!searchCount) return;
+    searchCount.classList.remove('is-empty', 'is-invalid');
+    if (invalid) {
+      searchCount.textContent = t('search.invalidRegex', lang());
+      searchCount.classList.add('is-invalid');
+      return;
+    }
+    if (!r || !searchInput.value) {
+      searchCount.textContent = '';
+      return;
+    }
+    if (r.resultCount <= 0) {
+      searchCount.textContent = t('search.noResults', lang());
+      searchCount.classList.add('is-empty');
+    } else if (r.resultIndex < 0) {
+      // Limite de destaques excedido: o addon não informa o índice atual
+      searchCount.textContent = `${r.resultCount}+`;
+    } else {
+      searchCount.textContent = `${r.resultIndex + 1}/${r.resultCount}`;
+    }
+  };
+
+  const runSearch = (direction: 'next' | 'prev', incremental = false): void => {
+    const pane = workspace.getActivePane();
+    if (!pane) return;
+    const query = searchInput.value;
+    if (!query) {
+      pane.clearSearch();
+      renderSearchCount(null);
+      return;
+    }
+    try {
+      const found =
+        direction === 'next'
+          ? pane.searchNext(query, searchCase.checked, searchRegex.checked, incremental)
+          : pane.searchPrev(query, searchCase.checked, searchRegex.checked);
+      // Sem decorações o addon não emite contagem; garante o feedback de "sem resultados"
+      if (!found) renderSearchCount({ resultIndex: -1, resultCount: 0 });
+    } catch {
+      renderSearchCount(null, true);
+    }
+  };
+
+  let searchDebounce: number | null = null;
+  const scheduleIncrementalSearch = (): void => {
+    if (searchDebounce !== null) window.clearTimeout(searchDebounce);
+    searchDebounce = window.setTimeout(() => {
+      searchDebounce = null;
+      runSearch('next', true);
+    }, 60);
+  };
+
+  /* ---------------------------- Workspace ---------------------------- */
 
   const workspace = new WorkspaceManager(
     stageEl,
@@ -349,18 +399,43 @@ async function bootstrap(): Promise<void> {
         }
       },
       onConfirmCommand: (pane, rawInput, resolvedCommand) => {
+        const l = lang();
         const diffNote =
           rawInput.toLowerCase() !== resolvedCommand.toLowerCase()
-            ? ` (corrigindo "${rawInput}" para "${resolvedCommand}")`
+            ? t('clear.diffNote', l, { raw: rawInput, resolved: resolvedCommand })
             : '';
-        openConfirmModal({
-          title: 'Confirmar /clear',
-          message: `Deseja limpar o terminal e resetar o contexto da conversa${diffNote}?`,
-          commandPreview: resolvedCommand,
+        confirmModal.open({
+          title: t('clear.title', l),
+          message: t('clear.message', l, { note: diffNote }),
+          preview: resolvedCommand,
           onConfirm: () => {
             soundFx.playSnippetSend();
             pane.replaceCurrentLineAndRun(rawInput, resolvedCommand);
           },
+        });
+      },
+      onSearchResults: (pane: TerminalPane, r: { resultIndex: number; resultCount: number }) => {
+        if (pane !== workspace.getActivePane() || !isSearchOpen()) return;
+        renderSearchCount(r);
+      },
+      onConfirmPaste: (_pane: TerminalPane, text: string, proceed: () => void) => {
+        const l = lang();
+        const lines = text.replace(/(\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/);
+        const MAX_PREVIEW_LINES = 3;
+        const MAX_LINE = 96;
+        const previewLines = lines
+          .slice(0, MAX_PREVIEW_LINES)
+          .map((line) => (line.length > MAX_LINE ? `${line.slice(0, MAX_LINE - 1)}…` : line));
+        if (lines.length > MAX_PREVIEW_LINES) {
+          previewLines.push(t('paste.more', l, { n: lines.length - MAX_PREVIEW_LINES }));
+        }
+        confirmModal.open({
+          title: t('paste.title', l, { n: lines.length }),
+          message: t('paste.message', l),
+          preview: previewLines.join('\n'),
+          previewMode: 'block',
+          confirmLabel: t('paste.confirm', l),
+          onConfirm: () => proceed(),
         });
       },
     }
@@ -385,6 +460,59 @@ async function bootstrap(): Promise<void> {
     document.documentElement.style.setProperty('--caju-crt-pad-x', `${padX}px`);
     document.documentElement.style.setProperty('--caju-crt-pad-y', `${padY}px`);
   };
+
+  /* ------------------- Textos e dicas de atalho da UI ----------------- */
+
+  let lastChromeKey = '';
+  const applyChromeI18n = (settings: AppSettings): void => {
+    const l = settings.language;
+    const kb: KeybindingsConfig = settings.keybindings;
+    const key = `${l}|${JSON.stringify(kb)}`;
+    if (key === lastChromeKey) return;
+    lastChromeKey = key;
+
+    document.documentElement.lang = normalizeLang(l);
+    document.title = t('app.title', l);
+
+    const setTip = (id: string, labelKey: Parameters<typeof t>[0], combo?: string): void => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const label = t(labelKey, l);
+      const hint = formatShortcut(combo);
+      el.title = hint ? `${label} (${hint})` : label;
+      el.setAttribute('aria-label', label);
+    };
+
+    setTip('btn-paths-menu', 'btn.paths');
+    setTip('btn-snippets-menu', 'btn.snippets');
+    setTip('btn-sounds-menu', 'btn.sounds');
+    setTip('btn-new-tab', 'btn.newTab', kb.newTab);
+    setTip('btn-profile-menu', 'btn.profileMenu');
+    setTip('btn-split-v', 'btn.splitV', kb.splitVertical);
+    setTip('btn-split-h', 'btn.splitH', kb.splitHorizontal);
+    setTip('btn-close-split', 'btn.closeSplit', kb.closePane);
+    setTip('btn-search', 'btn.search', kb.find);
+    setTip('btn-palette', 'btn.palette', kb.commandPalette);
+    setTip('btn-always-on-top', 'btn.alwaysOnTop', kb.toggleAlwaysOnTop);
+    setTip('btn-settings', 'btn.settings', kb.openSettings);
+    setTip('win-min', 'win.minimize');
+    setTip('win-max', 'win.maximize');
+    setTip('win-close', 'win.close');
+    setTip('search-prev', 'search.prev', 'Shift+Enter');
+    setTip('search-next', 'search.next', 'Enter');
+    setTip('search-close', 'search.close');
+    setTip('search-case-label', 'search.caseSensitive');
+    setTip('search-regex-label', 'search.regex');
+    searchInput.placeholder = t('search.placeholder', l);
+    searchInput.setAttribute('aria-label', t('search.placeholder', l));
+    document.getElementById('snippets-dock')?.setAttribute('aria-label', t('dock.label', l));
+  };
+
+  /* ---------------------------- Visuais ------------------------------ */
+
+  // Cache dos últimos argumentos de IPC para não repetir chamadas idênticas a cada tick
+  let lastVibrancyKey = '';
+  let lastAlwaysOnTop: boolean | null = null;
 
   const applyAllVisuals = (
     settings: AppSettings,
@@ -412,78 +540,49 @@ async function bootstrap(): Promise<void> {
 
     const [r, g, b] = hexToRgbTuple(theme.colors.background);
     const alphaByte = Math.round(Math.max(0.15, Math.min(1, settings.opacity)) * 255);
-    void applyWindowVibrancy(settings.vibrancy, [r, g, b, alphaByte]);
-    void windowSetAlwaysOnTop(settings.alwaysOnTop);
+    const vibrancyKey = `${settings.vibrancy}|${r},${g},${b},${alphaByte}`;
+    if (vibrancyKey !== lastVibrancyKey) {
+      lastVibrancyKey = vibrancyKey;
+      applyWindowVibrancy(settings.vibrancy, [r, g, b, alphaByte]).catch(() => {
+        lastVibrancyKey = '';
+      });
+    }
+    if (settings.alwaysOnTop !== lastAlwaysOnTop) {
+      lastAlwaysOnTop = settings.alwaysOnTop;
+      windowSetAlwaysOnTop(settings.alwaysOnTop).catch(() => {
+        lastAlwaysOnTop = null;
+      });
+    }
 
     btnAlwaysOnTop.classList.toggle('active', settings.alwaysOnTop);
+    btnAlwaysOnTop.setAttribute('aria-pressed', settings.alwaysOnTop ? 'true' : 'false');
     statusTheme.textContent = theme.name;
     statusEffects.textContent = settings.shaders.enabled ? 'FX ON' : 'FX OFF';
     statusSound.textContent = settings.sounds.enabled ? 'SFX ON' : 'SFX MUTE';
     statusSound.classList.toggle('status-glow', settings.sounds.enabled);
 
-    // Atualiza tooltips traduzidos
-    const lang = settings.language;
-    document.getElementById('btn-snippets-menu')?.setAttribute('title', t('btn.snippets', lang));
-    document.getElementById('btn-sounds-menu')?.setAttribute('title', t('btn.sounds', lang));
-    document.getElementById('btn-new-tab')?.setAttribute('title', t('btn.newTab', lang));
-    document.getElementById('btn-split-v')?.setAttribute('title', t('btn.splitV', lang));
-    document.getElementById('btn-split-h')?.setAttribute('title', t('btn.splitH', lang));
-    document.getElementById('btn-search')?.setAttribute('title', t('btn.search', lang));
-    document.getElementById('btn-palette')?.setAttribute('title', t('btn.palette', lang));
-    btnAlwaysOnTop.setAttribute('title', t('btn.alwaysOnTop', lang));
-    document.getElementById('btn-settings')?.setAttribute('title', t('btn.settings', lang));
-    searchInput.placeholder = t('search.placeholder', lang);
+    applyChromeI18n(settings);
+  };
+
+  const applyCommitted = (): void => {
+    applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+  };
+
+  /** Salva bundle.settings (já mutado) e reaplica; erros viram toast em vez de rejeição solta. */
+  const saveMainSettings = async (): Promise<void> => {
+    try {
+      bundle = await saveSettings(bundle.settings);
+    } catch (err) {
+      showAppToast(`${t('app.saveError', lang())} ${errText(err)}`, 'error');
+    }
+    applyCommitted();
   };
 
   const palette = new CommandPalette(document.getElementById('palette-root')!);
 
-  type ActiveSnippetAgent = 'agy' | 'claude';
+  /* ---------------------------- Snippets ----------------------------- */
+
   type DockFilterMode = 'all' | 'cli' | 'slash';
-  const STORAGE_AGENT_KEY = 'cajuterm:activeSnippetAgent';
-  const STORAGE_USAGE_KEY = 'cajuterm:snippetUsage';
-
-  const readStoredUsage = (): Record<string, number> => {
-    try {
-      const raw = localStorage.getItem(STORAGE_USAGE_KEY);
-      if (!raw) return {};
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const out: Record<string, number> = {};
-      for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
-          out[k] = Math.floor(v);
-        }
-      }
-      return out;
-    } catch {
-      return {};
-    }
-  };
-
-  const readInitialAgent = (settings: AppSettings): ActiveSnippetAgent => {
-    if (settings.activeSnippetAgent === 'agy' || settings.activeSnippetAgent === 'claude') {
-      return settings.activeSnippetAgent;
-    }
-    try {
-      return localStorage.getItem(STORAGE_AGENT_KEY) === 'claude' ? 'claude' : 'agy';
-    } catch {
-      return 'agy';
-    }
-  };
-
-  const mergeUsageMaps = (
-    diskUsage: Record<string, number> | undefined,
-    localUsage: Record<string, number>
-  ): Record<string, number> => {
-    const merged: Record<string, number> = { ...localUsage };
-    if (diskUsage) {
-      for (const [k, v] of Object.entries(diskUsage)) {
-        if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
-          merged[k] = Math.max(merged[k] ?? 0, Math.floor(v));
-        }
-      }
-    }
-    return merged;
-  };
 
   let activeAgent: ActiveSnippetAgent = readInitialAgent(bundle.settings);
   let snippetUsage: Record<string, number> = mergeUsageMaps(
@@ -494,13 +593,20 @@ async function bootstrap(): Promise<void> {
   let dockQuery = '';
   let snippetPersistTimer: number | null = null;
 
-  const persistSnippetStateToStorage = () => {
-    try {
-      localStorage.setItem(STORAGE_AGENT_KEY, activeAgent);
-      localStorage.setItem(STORAGE_USAGE_KEY, JSON.stringify(snippetUsage));
-    } catch {
-      // Ignora indisponibilidade de storage
+  const persistSnippetStateToStorage = () => writeSnippetStateToStorage(activeAgent, snippetUsage);
+
+  const flushSnippetState = () => {
+    snippetPersistTimer = null;
+    if (settingsModal.isModalOpen()) {
+      // O modal mescla esses campos ao salvar; reagenda para depois que ele fechar
+      snippetPersistTimer = window.setTimeout(flushSnippetState, 600);
+      return;
     }
+    void saveSettings(bundle.settings)
+      .then((next) => {
+        bundle = next;
+      })
+      .catch(() => {});
   };
 
   const schedulePersistSnippetState = () => {
@@ -510,16 +616,10 @@ async function bootstrap(): Promise<void> {
     if (snippetPersistTimer !== null) {
       window.clearTimeout(snippetPersistTimer);
     }
-    snippetPersistTimer = window.setTimeout(() => {
-      snippetPersistTimer = null;
-      if (settingsModal.isModalOpen()) return;
-      void saveSettings(bundle.settings)
-        .then((next) => {
-          bundle = next;
-        })
-        .catch(() => {});
-    }, 180);
+    snippetPersistTimer = window.setTimeout(flushSnippetState, 180);
   };
+
+  /* ---------------------------- Modais ------------------------------- */
 
   const settingsModal = new SettingsModal(document.getElementById('settings-root')!, {
     onLivePreview: (draft, themes, css) => {
@@ -528,7 +628,7 @@ async function bootstrap(): Promise<void> {
     onBundleCommitted: async (nextBundle) => {
       bundle = nextBundle;
       await loadUserFonts(bundle.fonts);
-      applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+      applyCommitted();
       renderProfileDropdown();
       if (
         nextBundle.settings.activeSnippetAgent === 'agy' ||
@@ -539,7 +639,17 @@ async function bootstrap(): Promise<void> {
       snippetUsage = mergeUsageMaps(nextBundle.settings.snippetUsage, snippetUsage);
       persistSnippetStateToStorage();
       renderSnippetsDock();
+      quickPaths = await listQuickPaths().catch(() => quickPaths);
     },
+    onCancel: () => {
+      applyCommitted();
+    },
+    getLiveOverrides: () => ({
+      activeSnippetAgent: activeAgent,
+      snippetUsage: { ...snippetUsage },
+      alwaysOnTop: bundle.settings.alwaysOnTop,
+    }),
+    confirm: (opts) => confirmModal.open(opts),
     onTestSound: (kind) => {
       soundFx.updateConfig(activeSettings.sounds);
       if (kind === 'messageEnd') {
@@ -555,22 +665,44 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  const togglePalette = () => {
+    closeAllTitlebarDropdowns();
+    palette.toggle(buildPaletteCommands(), lang());
+  };
+
+  const toggleSettings = () => {
+    if (settingsModal.isModalOpen()) {
+      settingsModal.requestClose();
+      return;
+    }
+    closeAllTitlebarDropdowns();
+    if (palette.isPaletteOpen()) palette.close();
+    settingsModal.open(bundle);
+  };
+
   const openSearch = () => {
-    searchBar.classList.remove('hidden');
+    closeAllTitlebarDropdowns();
+    const wasOpen = isSearchOpen();
+    showPopover(searchBar);
     searchInput.focus();
     searchInput.select();
+    if (!wasOpen && searchInput.value) runSearch('next', true);
   };
 
   const closeSearch = () => {
-    searchBar.classList.add('hidden');
+    if (searchDebounce !== null) {
+      window.clearTimeout(searchDebounce);
+      searchDebounce = null;
+    }
+    hidePopover(searchBar);
     workspace.getActivePane()?.clearSearch();
-    workspace.getActivePane()?.focus();
+    renderSearchCount(null);
+    focusActivePane();
   };
 
   const toggleAlwaysOnTop = async () => {
     bundle.settings.alwaysOnTop = !bundle.settings.alwaysOnTop;
-    bundle = await saveSettings(bundle.settings);
-    applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+    await saveMainSettings();
   };
 
   const triggerReaction = (kind: ReactionKind) => {
@@ -603,10 +735,11 @@ async function bootstrap(): Promise<void> {
       (snippet.confirm || (snippet.command.trim() === '/clear' && bundle.settings.confirmClear));
 
     if (needsConfirm) {
-      openConfirmModal({
-        title: `Confirmar ${snippet.label}`,
-        message: snippet.description || 'Confirma a execução deste comando no terminal ativo?',
-        commandPreview: snippet.command,
+      const l = lang();
+      confirmModal.open({
+        title: t('snippet.confirmTitle', l, { label: snippet.label }),
+        message: snippet.description || t('snippet.confirmMessage', l),
+        preview: snippet.command,
         onConfirm: () => {
           recordSnippetExecution(snippet, false);
           soundFx.playSnippetSend();
@@ -622,48 +755,53 @@ async function bootstrap(): Promise<void> {
   };
 
   const buildPaletteCommands = (): PaletteCommand[] => {
-    const lang = bundle.settings.language;
+    const l = lang();
     const kb = bundle.settings.keybindings;
+    const sc = (combo: string | undefined) => formatShortcut(combo) || undefined;
     const cmds: PaletteCommand[] = [
-      { id: 'new-tab', label: t('cmd.newTab', lang), shortcut: kb.newTab, run: () => workspace.createTab() },
-      { id: 'close-tab', label: t('cmd.closeTab', lang), shortcut: kb.closeTab, run: () => workspace.closeTab() },
-      { id: 'split-v', label: t('cmd.splitV', lang), shortcut: kb.splitVertical, run: () => workspace.splitActive('vertical') },
-      { id: 'split-h', label: t('cmd.splitH', lang), shortcut: kb.splitHorizontal, run: () => workspace.splitActive('horizontal') },
-      { id: 'close-pane', label: t('cmd.closePane', lang), shortcut: kb.closePane, run: () => workspace.closeActivePane() },
-      { id: 'find', label: t('cmd.find', lang), shortcut: kb.find, run: openSearch },
-      { id: 'settings', label: t('cmd.settings', lang), shortcut: kb.openSettings, run: () => settingsModal.open(bundle) },
-      { id: 'aot', label: t('cmd.alwaysOnTop', lang), shortcut: kb.toggleAlwaysOnTop, run: () => void toggleAlwaysOnTop() },
-      { id: 'quake', label: t('cmd.quakeMode', lang), shortcut: kb.quakeGlobal, run: () => void toggleQuakeMode() },
+      { id: 'new-tab', label: t('cmd.newTab', l), shortcut: sc(kb.newTab), run: () => void workspace.createTab() },
+      { id: 'close-tab', label: t('cmd.closeTab', l), shortcut: sc(kb.closeTab), run: () => workspace.closeTab() },
+      { id: 'split-v', label: t('cmd.splitV', l), shortcut: sc(kb.splitVertical), run: () => workspace.splitActive('vertical') },
+      { id: 'split-h', label: t('cmd.splitH', l), shortcut: sc(kb.splitHorizontal), run: () => workspace.splitActive('horizontal') },
+      { id: 'close-pane', label: t('cmd.closePane', l), shortcut: sc(kb.closePane), run: () => workspace.closeActivePane() },
+      { id: 'find', label: t('cmd.find', l), shortcut: sc(kb.find), run: openSearch },
+      { id: 'settings', label: t('cmd.settings', l), shortcut: sc(kb.openSettings), run: () => settingsModal.open(bundle) },
+      { id: 'aot', label: t('cmd.alwaysOnTop', l), shortcut: sc(kb.toggleAlwaysOnTop), run: () => void toggleAlwaysOnTop() },
+      { id: 'quake', label: t('cmd.quakeMode', l), shortcut: sc(kb.quakeGlobal), run: () => void toggleQuakeMode().catch(() => {}) },
       {
         id: 'toggle-shaders',
-        label: t('cmd.toggleShaders', lang),
-        run: async () => {
+        label: t('cmd.toggleShaders', l),
+        run: () => {
           bundle.settings.shaders.enabled = !bundle.settings.shaders.enabled;
-          bundle = await saveSettings(bundle.settings);
-          applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+          void saveMainSettings();
         },
       },
       {
         id: 'clear',
-        label: t('cmd.clearTerminal', lang),
+        label: t('cmd.clearTerminal', l),
         run: () => workspace.getActivePane()?.clearBuffer(),
       },
+      { id: 'zoom-in', label: t('cmd.zoomIn', l), shortcut: 'Ctrl+=', run: () => workspace.getActivePane()?.adjustZoom(1) },
+      { id: 'zoom-out', label: t('cmd.zoomOut', l), shortcut: 'Ctrl+-', run: () => workspace.getActivePane()?.adjustZoom(-1) },
+      { id: 'zoom-reset', label: t('cmd.zoomReset', l), shortcut: 'Ctrl+0', run: () => workspace.getActivePane()?.resetZoom() },
+      { id: 'prompt-prev', label: t('cmd.promptPrev', l), shortcut: 'Ctrl+Shift+↑', run: () => void workspace.getActivePane()?.jumpToPrompt(-1) },
+      { id: 'prompt-next', label: t('cmd.promptNext', l), shortcut: 'Ctrl+Shift+↓', run: () => void workspace.getActivePane()?.jumpToPrompt(1) },
     ];
 
     for (const p of bundle.settings.profiles) {
       cmds.push({
         id: `profile-${p.id}`,
-        category: 'Perfil',
+        category: t('palette.catProfile', l),
         label: p.name,
-        shortcut: p.shortcut || undefined,
-        run: () => workspace.createTab(p),
+        shortcut: sc(p.shortcut),
+        run: () => void workspace.createTab(p),
       });
     }
 
     for (const theme of bundle.themes) {
       cmds.push({
         id: `theme-${theme.id}`,
-        category: t('cmd.switchTheme', lang),
+        category: t('cmd.switchTheme', l),
         label: `${theme.name} (${theme.category})`,
         swatches: [
           theme.colors.background,
@@ -673,10 +811,9 @@ async function bootstrap(): Promise<void> {
           theme.colors.yellow,
           theme.colors.cyan,
         ],
-        run: async () => {
+        run: () => {
           bundle.settings.theme = theme.id;
-          bundle = await saveSettings(bundle.settings);
-          applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+          void saveMainSettings();
         },
       });
     }
@@ -684,15 +821,15 @@ async function bootstrap(): Promise<void> {
     for (const qp of quickPaths) {
       cmds.push({
         id: `path-cd-${qp.path}`,
-        category: 'Path (cd)',
+        category: t('palette.catPathCd', l),
         label: `${qp.label} — ${qp.path}`,
         run: () => workspace.getActivePane()?.changeDirectory(qp.path),
       });
       cmds.push({
         id: `path-tab-${qp.path}`,
-        category: 'Path (+ Aba)',
+        category: t('palette.catPathTab', l),
         label: `${qp.label} — ${qp.path}`,
-        run: () => workspace.createTab(undefined, qp.path),
+        run: () => void workspace.createTab(undefined, qp.path),
       });
     }
 
@@ -714,7 +851,7 @@ async function bootstrap(): Promise<void> {
     for (const reaction of REACTION_ITEMS) {
       cmds.push({
         id: `reaction-${reaction.kind}`,
-        category: 'Reação (Som + FX)',
+        category: t('palette.catReaction', l),
         label: `${reaction.emoji} ${reaction.label} — ${reaction.title}`,
         run: () => triggerReaction(reaction.kind),
       });
@@ -723,16 +860,23 @@ async function bootstrap(): Promise<void> {
     return cmds;
   };
 
+  /* ------------------------ Menus da barra --------------------------- */
+
   const renderPathsDropdown = async () => {
     const menu = document.getElementById('paths-dropdown');
     if (!menu) return;
     quickPaths = await listQuickPaths().catch(() => quickPaths);
+    if (!isPopoverShown(menu)) return;
+    const l = lang();
     menu.innerHTML = '';
 
     const filterInput = document.createElement('input');
     filterInput.type = 'text';
     filterInput.className = 'paths-filter-input';
-    filterInput.placeholder = 'Filtrar pasta (ex: CajuTerm, virtus)...';
+    filterInput.autocomplete = 'off';
+    filterInput.spellcheck = false;
+    filterInput.placeholder = t('paths.filter', l);
+    filterInput.setAttribute('aria-label', t('paths.filter', l));
 
     const listEl = document.createElement('div');
     listEl.className = 'paths-list';
@@ -748,6 +892,13 @@ async function bootstrap(): Promise<void> {
         : quickPaths;
 
       listEl.innerHTML = '';
+      if (visibleEntries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'snippets-dd-empty';
+        empty.textContent = t('paths.empty', l);
+        listEl.appendChild(empty);
+        return;
+      }
       let lastGroup = '';
 
       for (const entry of visibleEntries) {
@@ -766,34 +917,38 @@ async function bootstrap(): Promise<void> {
         mainBtn.type = 'button';
         mainBtn.className = 'paths-main-btn';
         mainBtn.title = `cd "${entry.path}"`;
-        mainBtn.innerHTML = `
-          <span class="paths-main-label">📁 ${entry.label}</span>
-          <span class="paths-main-sub">${entry.path}</span>
-        `;
+        const labelEl = document.createElement('span');
+        labelEl.className = 'paths-main-label';
+        labelEl.textContent = `📁 ${entry.label}`;
+        const subEl = document.createElement('span');
+        subEl.className = 'paths-main-sub';
+        subEl.textContent = entry.path;
+        mainBtn.append(labelEl, subEl);
         mainBtn.addEventListener('click', () => {
-          menu.classList.add('hidden');
+          closeDropdown('paths-dropdown');
           workspace.getActivePane()?.changeDirectory(entry.path);
         });
 
         const tabBtn = document.createElement('button');
         tabBtn.type = 'button';
         tabBtn.className = 'paths-mini-btn';
-        tabBtn.textContent = '+ Aba';
-        tabBtn.title = `Abrir nova aba em ${entry.path}`;
+        tabBtn.textContent = t('paths.newTab', l);
+        tabBtn.title = t('paths.newTabTitle', l, { path: entry.path });
         tabBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          menu.classList.add('hidden');
-          workspace.createTab(undefined, entry.path);
+          closeDropdown('paths-dropdown');
+          void workspace.createTab(undefined, entry.path);
         });
 
         const splitBtn = document.createElement('button');
         splitBtn.type = 'button';
         splitBtn.className = 'paths-mini-btn';
         splitBtn.textContent = '⫼';
-        splitBtn.title = `Abrir split vertical em ${entry.path}`;
+        splitBtn.title = t('paths.splitTitle', l, { path: entry.path });
+        splitBtn.setAttribute('aria-label', splitBtn.title);
         splitBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          menu.classList.add('hidden');
+          closeDropdown('paths-dropdown');
           workspace.splitActive('vertical', undefined, entry.path);
         });
 
@@ -806,13 +961,8 @@ async function bootstrap(): Promise<void> {
     filterInput.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && visibleEntries.length > 0) {
         ev.preventDefault();
-        menu.classList.add('hidden');
+        closeDropdown('paths-dropdown');
         workspace.getActivePane()?.changeDirectory(visibleEntries[0].path);
-      } else if (ev.key === 'Escape') {
-        ev.preventDefault();
-        ev.stopPropagation();
-        menu.classList.add('hidden');
-        workspace.getActivePane()?.focus();
       }
     });
 
@@ -828,6 +978,7 @@ async function bootstrap(): Promise<void> {
   let dockPopularTrackEl: HTMLDivElement | null = null;
 
   const createAgentSwitch = (onAfterSwitch?: () => void): HTMLDivElement => {
+    const l = lang();
     const switchEl = document.createElement('div');
     switchEl.className = 'snippets-agent-switch';
 
@@ -853,8 +1004,8 @@ async function bootstrap(): Promise<void> {
     };
 
     switchEl.append(
-      makeBtn('agy', '⚡ AGY', 'Ativar somente snippets do Antigravity CLI (AGY)'),
-      makeBtn('claude', '🤖 Claude', 'Ativar somente snippets do Claude Code')
+      makeBtn('agy', '⚡ AGY', t('dock.agyTitle', l)),
+      makeBtn('claude', '🤖 Claude', t('dock.claudeTitle', l))
     );
     return switchEl;
   };
@@ -897,6 +1048,7 @@ async function bootstrap(): Promise<void> {
   const renderSnippetsDropdown = (): void => {
     const menu = document.getElementById('snippets-dropdown');
     if (!menu) return;
+    const l = lang();
     menu.innerHTML = '';
     menu.dataset.agent = activeAgent;
 
@@ -914,7 +1066,8 @@ async function bootstrap(): Promise<void> {
     filterInput.className = 'paths-filter-input';
     filterInput.autocomplete = 'off';
     filterInput.spellcheck = false;
-    filterInput.placeholder = 'Filtrar snippet (Enter executa)...';
+    filterInput.placeholder = t('snippets.filter', l);
+    filterInput.setAttribute('aria-label', t('snippets.filter', l));
     filterInput.value = dockQuery;
 
     const listEl = document.createElement('div');
@@ -929,7 +1082,7 @@ async function bootstrap(): Promise<void> {
       if (visibleEntries.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'snippets-dd-empty';
-        empty.textContent = `Nenhum snippet do ${activeAgent === 'agy' ? 'AGY' : 'Claude'} encontrado.`;
+        empty.textContent = t('snippets.empty', l, { agent: activeAgent === 'agy' ? 'AGY' : 'Claude' });
         listEl.appendChild(empty);
         return;
       }
@@ -941,7 +1094,7 @@ async function bootstrap(): Promise<void> {
         const runBtn = document.createElement('button');
         runBtn.type = 'button';
         runBtn.className = 'snippets-dd-run';
-        runBtn.title = `${snip.label} — ${snip.description} (Clique: executar | Shift/Dir: colar sem Enter)`;
+        runBtn.title = `${snip.label} — ${snip.description} ${t('snippets.runHint', l)}`;
 
         const runTop = document.createElement('div');
         runTop.className = 'snippets-dd-run-top';
@@ -976,12 +1129,12 @@ async function bootstrap(): Promise<void> {
 
         runBtn.append(runTop, descEl);
         runBtn.addEventListener('click', (ev) => {
-          menu.classList.add('hidden');
+          closeDropdown('snippets-dropdown');
           executeSnippet(snip, ev.shiftKey);
         });
         runBtn.addEventListener('contextmenu', (ev) => {
           ev.preventDefault();
-          menu.classList.add('hidden');
+          closeDropdown('snippets-dropdown');
           executeSnippet(snip, true);
         });
 
@@ -989,10 +1142,11 @@ async function bootstrap(): Promise<void> {
         insertBtn.type = 'button';
         insertBtn.className = 'snippet-pill-edit';
         insertBtn.textContent = '✎';
-        insertBtn.title = 'Colar no prompt sem pressionar Enter';
+        insertBtn.title = t('snippets.insertTitle', l);
+        insertBtn.setAttribute('aria-label', t('snippets.insertTitle', l));
         insertBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          menu.classList.add('hidden');
+          closeDropdown('snippets-dropdown');
           executeSnippet(snip, true);
         });
 
@@ -1002,9 +1156,9 @@ async function bootstrap(): Promise<void> {
     };
 
     for (const def of [
-      { mode: 'all' as const, label: 'Todos' },
+      { mode: 'all' as const, label: t('snippets.filterAll', l) },
       { mode: 'cli' as const, label: 'CLI' },
-      { mode: 'slash' as const, label: '/ Comandos' },
+      { mode: 'slash' as const, label: t('snippets.filterSlash', l) },
     ]) {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -1029,13 +1183,8 @@ async function bootstrap(): Promise<void> {
     filterInput.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && visibleEntries.length > 0) {
         ev.preventDefault();
-        menu.classList.add('hidden');
+        closeDropdown('snippets-dropdown');
         executeSnippet(visibleEntries[0], ev.shiftKey);
-      } else if (ev.key === 'Escape') {
-        ev.preventDefault();
-        ev.stopPropagation();
-        menu.classList.add('hidden');
-        workspace.getActivePane()?.focus();
       }
     });
 
@@ -1047,11 +1196,14 @@ async function bootstrap(): Promise<void> {
 
   function renderSnippetsDock(): void {
     if (!snippetsDockEl || !dockPopularTrackEl || !dockPopularLabelEl) return;
+    const l = lang();
 
     snippetsDockEl.dataset.agent = activeAgent;
     dockAgyBtn?.classList.toggle('active', activeAgent === 'agy');
     dockClaudeBtn?.classList.toggle('active', activeAgent === 'claude');
-    dockPopularLabelEl.textContent = '🔥 Mais Usados';
+    if (dockAgyBtn) dockAgyBtn.title = t('dock.agyTitle', l);
+    if (dockClaudeBtn) dockClaudeBtn.title = t('dock.claudeTitle', l);
+    dockPopularLabelEl.textContent = t('dock.popular', l);
 
     const all = getAllSnippets(bundle.settings.customSnippets);
     const agentSnippets = getSnippetsForAgent(all, activeAgent);
@@ -1063,7 +1215,7 @@ async function bootstrap(): Promise<void> {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = `popular-chip${count > 0 ? ' used' : ''}`;
-      chip.title = `${snip.label} — ${snip.description} (Clique: executar | Shift/Dir: colar)`;
+      chip.title = `${snip.label} — ${snip.description} ${t('snippets.chipHint', l)}`;
 
       const cmdCode = document.createElement('code');
       cmdCode.className = 'popular-cmd';
@@ -1090,8 +1242,7 @@ async function bootstrap(): Promise<void> {
 
     fitPopularChips();
 
-    const snippetsMenu = document.getElementById('snippets-dropdown');
-    if (snippetsMenu && !snippetsMenu.classList.contains('hidden')) {
+    if (isPopoverShown(document.getElementById('snippets-dropdown'))) {
       renderSnippetsDropdown();
     }
 
@@ -1107,7 +1258,7 @@ async function bootstrap(): Promise<void> {
     snippetsDockEl.innerHTML = '';
 
     const agentSwitch = createAgentSwitch(() => {
-      workspace.getActivePane()?.focus();
+      focusActivePane();
     });
     dockAgyBtn = agentSwitch.children[0] as HTMLButtonElement;
     dockClaudeBtn = agentSwitch.children[1] as HTMLButtonElement;
@@ -1125,13 +1276,18 @@ async function bootstrap(): Promise<void> {
   const persistSoundUpdate = async (mutator: (s: AppSettings['sounds']) => void) => {
     mutator(bundle.settings.sounds);
     soundFx.updateConfig(bundle.settings.sounds);
-    applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
-    bundle = await saveSettings(bundle.settings);
+    applyCommitted();
+    try {
+      bundle = await saveSettings(bundle.settings);
+    } catch (err) {
+      showAppToast(`${t('app.saveError', lang())} ${errText(err)}`, 'error');
+    }
   };
 
   const renderSoundsDropdown = () => {
     const menu = document.getElementById('sounds-dropdown');
     if (!menu) return;
+    const l = lang();
     menu.innerHTML = '';
 
     const snd = bundle.settings.sounds;
@@ -1141,12 +1297,13 @@ async function bootstrap(): Promise<void> {
 
     const title = document.createElement('span');
     title.className = 'sounds-dd-title';
-    title.textContent = 'Sons & Reações';
+    title.textContent = t('sounds.title', l);
 
     const muteBtn = document.createElement('button');
     muteBtn.type = 'button';
     muteBtn.className = `paths-mini-btn${snd.enabled ? ' active' : ''}`;
-    muteBtn.textContent = snd.enabled ? '🔊 Ativo' : '🔇 Mutado';
+    muteBtn.textContent = snd.enabled ? t('sounds.on', l) : t('sounds.off', l);
+    muteBtn.setAttribute('aria-pressed', snd.enabled ? 'true' : 'false');
     muteBtn.addEventListener('click', () => {
       void persistSoundUpdate((s) => {
         s.enabled = !s.enabled;
@@ -1161,7 +1318,12 @@ async function bootstrap(): Promise<void> {
       btn.type = 'button';
       btn.className = 'reaction-btn';
       btn.title = item.title;
-      btn.innerHTML = `<span class="reaction-emoji">${item.emoji}</span><span>${item.label}</span>`;
+      const emoji = document.createElement('span');
+      emoji.className = 'reaction-emoji';
+      emoji.textContent = item.emoji;
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      btn.append(emoji, label);
       btn.addEventListener('click', () => {
         triggerReaction(item.kind);
       });
@@ -1171,7 +1333,7 @@ async function bootstrap(): Promise<void> {
     const msgEndTestBtn = document.createElement('button');
     msgEndTestBtn.type = 'button';
     msgEndTestBtn.className = 'sounds-test-btn';
-    msgEndTestBtn.textContent = '✨ Testar Som de Fim de Mensagem';
+    msgEndTestBtn.textContent = t('sounds.testMsgEnd', l);
     msgEndTestBtn.addEventListener('click', () => {
       soundFx.playMessageEnd(true);
       cursorFx.spawnReactionBurst('✨', workspace.getActivePane()?.getCursorScreenPos());
@@ -1182,6 +1344,7 @@ async function bootstrap(): Promise<void> {
 
     const presetSelect = document.createElement('select');
     presetSelect.className = 'sounds-select';
+    presetSelect.setAttribute('aria-label', t('settings.snd.preset', l));
     for (const p of [
       { value: 'cyberpunk', label: 'Cyberpunk Synth' },
       { value: 'arcade', label: 'Arcade 8-Bit' },
@@ -1202,7 +1365,9 @@ async function bootstrap(): Promise<void> {
 
     const volWrap = document.createElement('label');
     volWrap.className = 'sounds-vol-row';
-    volWrap.innerHTML = `<span>Vol</span>`;
+    const volLabel = document.createElement('span');
+    volLabel.textContent = t('sounds.vol', l);
+    volWrap.appendChild(volLabel);
     const volSlider = document.createElement('input');
     volSlider.type = 'range';
     volSlider.min = '0';
@@ -1236,16 +1401,16 @@ async function bootstrap(): Promise<void> {
       togglesRow.appendChild(lbl);
     };
 
-    addToggle('Fim de Msg', snd.messageEnd, (v) => {
+    addToggle(t('sounds.tgMsgEnd', l), snd.messageEnd, (v) => {
       bundle.settings.sounds.messageEnd = v;
     });
-    addToggle('Bell / Aprovar', snd.bell, (v) => {
+    addToggle(t('sounds.tgBell', l), snd.bell, (v) => {
       bundle.settings.sounds.bell = v;
     });
-    addToggle('Erros', snd.errorAlert, (v) => {
+    addToggle(t('sounds.tgErrors', l), snd.errorAlert, (v) => {
       bundle.settings.sounds.errorAlert = v;
     });
-    addToggle('Teclas', snd.typingTick, (v) => {
+    addToggle(t('sounds.tgTyping', l), snd.typingTick, (v) => {
       bundle.settings.sounds.typingTick = v;
     });
 
@@ -1260,21 +1425,28 @@ async function bootstrap(): Promise<void> {
     for (const profile of bundle.settings.profiles) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.textContent = profile.shortcut ? `${profile.name} (${profile.shortcut})` : profile.name;
+      const hint = formatShortcut(profile.shortcut);
+      btn.textContent = hint ? `${profile.name} (${hint})` : profile.name;
       btn.addEventListener('click', () => {
-        menu.classList.add('hidden');
-        workspace.createTab(profile);
+        closeDropdown('profile-dropdown');
+        void workspace.createTab(profile);
       });
       menu.appendChild(btn);
     }
   };
+
+  /* ----------------------- Janela e barra superior -------------------- */
 
   // Arrastar e maximizar janela pela barra de título
   const titlebarEl = document.getElementById('titlebar');
   titlebarEl?.addEventListener('mousedown', (ev) => {
     if (ev.button !== 0) return;
     const target = ev.target as HTMLElement | null;
-    if (target?.closest('button, input, select, a, .tab-item, .profile-dropdown')) {
+    if (
+      target?.closest(
+        'button, input, select, a, label, .tab-item, .profile-dropdown, .paths-dropdown, .snippets-dropdown, .sounds-dropdown'
+      )
+    ) {
       return;
     }
     if (ev.detail === 2) {
@@ -1284,49 +1456,50 @@ async function bootstrap(): Promise<void> {
     }
   });
 
+  // Janela maximizada: remove cantos arredondados e borda
+  if (isTauriRuntime()) {
+    try {
+      const appWindow = getCurrentWindow();
+      let maxSyncPending = false;
+      const syncMaximized = () => {
+        if (maxSyncPending) return;
+        maxSyncPending = true;
+        requestAnimationFrame(() => {
+          maxSyncPending = false;
+          appWindow
+            .isMaximized()
+            .then((maximized) => appEl?.classList.toggle('is-maximized', maximized))
+            .catch(() => {});
+        });
+      };
+      appWindow.onResized(syncMaximized).catch(() => {});
+      syncMaximized();
+    } catch {
+      // Sem API de janela (ambiente de dev no navegador)
+    }
+  }
+
   // Botões da barra superior e controles de janela
-  document.getElementById('paths-dropdown')?.addEventListener('click', (ev) => ev.stopPropagation());
-  document.getElementById('snippets-dropdown')?.addEventListener('click', (ev) => ev.stopPropagation());
-  document.getElementById('sounds-dropdown')?.addEventListener('click', (ev) => ev.stopPropagation());
+  for (const { id } of DROPDOWNS) {
+    document.getElementById(id)?.addEventListener('click', (ev) => ev.stopPropagation());
+  }
 
   document.getElementById('btn-paths-menu')?.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    closeAllTitlebarDropdowns('paths-dropdown');
-    const pathsMenu = document.getElementById('paths-dropdown');
-    if (!pathsMenu) return;
-    const willOpen = pathsMenu.classList.contains('hidden');
-    pathsMenu.classList.toggle('hidden');
-    if (willOpen) {
-      void renderPathsDropdown();
-    }
+    toggleDropdown('paths-dropdown', () => void renderPathsDropdown());
   });
   document.getElementById('btn-snippets-menu')?.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    closeAllTitlebarDropdowns('snippets-dropdown');
-    const snippetsMenu = document.getElementById('snippets-dropdown');
-    if (!snippetsMenu) return;
-    const willOpen = snippetsMenu.classList.contains('hidden');
-    snippetsMenu.classList.toggle('hidden');
-    if (willOpen) {
-      renderSnippetsDropdown();
-    }
+    toggleDropdown('snippets-dropdown', renderSnippetsDropdown);
   });
   document.getElementById('btn-sounds-menu')?.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    closeAllTitlebarDropdowns('sounds-dropdown');
-    const soundsMenu = document.getElementById('sounds-dropdown');
-    if (!soundsMenu) return;
-    const willOpen = soundsMenu.classList.contains('hidden');
-    soundsMenu.classList.toggle('hidden');
-    if (willOpen) {
-      renderSoundsDropdown();
-    }
+    toggleDropdown('sounds-dropdown', renderSoundsDropdown);
   });
-  document.getElementById('btn-new-tab')?.addEventListener('click', () => workspace.createTab());
+  document.getElementById('btn-new-tab')?.addEventListener('click', () => void workspace.createTab());
   document.getElementById('btn-profile-menu')?.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    closeAllTitlebarDropdowns('profile-dropdown');
-    document.getElementById('profile-dropdown')?.classList.toggle('hidden');
+    toggleDropdown('profile-dropdown');
   });
   document.addEventListener('click', () => {
     closeAllTitlebarDropdowns();
@@ -1340,105 +1513,67 @@ async function bootstrap(): Promise<void> {
   document.getElementById('btn-split-h')?.addEventListener('click', () => workspace.splitActive('horizontal'));
   document.getElementById('btn-close-split')?.addEventListener('click', () => workspace.closeActivePane());
   document.getElementById('btn-search')?.addEventListener('click', openSearch);
-  document.getElementById('btn-palette')?.addEventListener('click', () =>
-    palette.toggle(buildPaletteCommands(), bundle.settings.language)
-  );
+  document.getElementById('btn-palette')?.addEventListener('click', togglePalette);
   btnAlwaysOnTop.addEventListener('click', () => void toggleAlwaysOnTop());
-  document.getElementById('btn-settings')?.addEventListener('click', () => settingsModal.toggle(bundle));
+  document.getElementById('btn-settings')?.addEventListener('click', toggleSettings);
 
   document.getElementById('win-min')?.addEventListener('click', () => void windowMinimize());
   document.getElementById('win-max')?.addEventListener('click', () => void windowToggleMaximize());
   document.getElementById('win-close')?.addEventListener('click', () => void windowClose());
 
-  // Busca no terminal
-  document.getElementById('search-next')?.addEventListener('click', () => {
-    workspace.getActivePane()?.searchNext(searchInput.value, searchCase.checked, searchRegex.checked);
-  });
-  document.getElementById('search-prev')?.addEventListener('click', () => {
-    workspace.getActivePane()?.searchPrev(searchInput.value, searchCase.checked, searchRegex.checked);
-  });
+  // Busca no terminal (incremental com debounce + contador n/m)
+  document.getElementById('search-next')?.addEventListener('click', () => runSearch('next'));
+  document.getElementById('search-prev')?.addEventListener('click', () => runSearch('prev'));
   document.getElementById('search-close')?.addEventListener('click', closeSearch);
+  searchInput.addEventListener('input', scheduleIncrementalSearch);
+  searchCase.addEventListener('change', () => runSearch('next', true));
+  searchRegex.addEventListener('change', () => runSearch('next', true));
   searchInput.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') {
-      if (ev.shiftKey) {
-        workspace.getActivePane()?.searchPrev(searchInput.value, searchCase.checked, searchRegex.checked);
-      } else {
-        workspace.getActivePane()?.searchNext(searchInput.value, searchCase.checked, searchRegex.checked);
-      }
-    } else if (ev.key === 'Escape') {
       ev.preventDefault();
-      ev.stopPropagation();
-      closeSearch();
+      if (searchDebounce !== null) {
+        window.clearTimeout(searchDebounce);
+        searchDebounce = null;
+      }
+      runSearch(ev.shiftKey ? 'prev' : 'next');
     }
   });
 
-  // Atalhos globais do teclado dentro do app (fase de captura para garantir Esc em qualquer modal/menu)
+  // Atalhos globais (captura): Esc fecha a camada mais alta; modais bloqueiam atalhos do app
   window.addEventListener(
     'keydown',
     (ev) => {
-      if (confirmActions) {
+      if (confirmModal.isOpen()) {
+        // Enter ativa nativamente o botão focado (Cancelar ou Confirmar)
         if (ev.key === 'Escape') {
           ev.preventDefault();
           ev.stopPropagation();
-          confirmActions.cancel();
-          return;
+          confirmModal.cancel();
         }
-        if (ev.key === 'Enter') {
-          ev.preventDefault();
-          ev.stopPropagation();
-          confirmActions.confirm();
-          return;
-        }
+        return;
       }
 
       if (ev.key === 'Escape') {
-        const snippetsDropdown = document.getElementById('snippets-dropdown');
-        if (snippetsDropdown && !snippetsDropdown.classList.contains('hidden')) {
+        const openId = openDropdownId();
+        if (openId) {
           ev.preventDefault();
           ev.stopPropagation();
-          snippetsDropdown.classList.add('hidden');
-          workspace.getActivePane()?.focus();
-          return;
-        }
-        const soundsDropdown = document.getElementById('sounds-dropdown');
-        if (soundsDropdown && !soundsDropdown.classList.contains('hidden')) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          soundsDropdown.classList.add('hidden');
-          workspace.getActivePane()?.focus();
-          return;
-        }
-        const pathsDropdown = document.getElementById('paths-dropdown');
-        if (pathsDropdown && !pathsDropdown.classList.contains('hidden')) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          pathsDropdown.classList.add('hidden');
-          workspace.getActivePane()?.focus();
-          return;
-        }
-        const dropdown = document.getElementById('profile-dropdown');
-        if (dropdown && !dropdown.classList.contains('hidden')) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          dropdown.classList.add('hidden');
-          workspace.getActivePane()?.focus();
+          closeDropdown(openId, true);
           return;
         }
         if (palette.isPaletteOpen()) {
           ev.preventDefault();
           ev.stopPropagation();
           palette.close();
-          workspace.getActivePane()?.focus();
           return;
         }
         if (settingsModal.isModalOpen()) {
           ev.preventDefault();
           ev.stopPropagation();
-          settingsModal.close();
-          workspace.getActivePane()?.focus();
+          settingsModal.handleEscape();
           return;
         }
-        if (!searchBar.classList.contains('hidden')) {
+        if (isSearchOpen()) {
           ev.preventDefault();
           ev.stopPropagation();
           closeSearch();
@@ -1446,82 +1581,36 @@ async function bootstrap(): Promise<void> {
         }
       }
 
-      const kb = bundle.settings.keybindings;
-      if (matchesShortcut(ev, kb.commandPalette)) {
-        ev.preventDefault();
-        palette.toggle(buildPaletteCommands(), bundle.settings.language);
-      } else if (matchesShortcut(ev, kb.openSettings)) {
-        ev.preventDefault();
-        settingsModal.toggle(bundle);
-      } else if (matchesShortcut(ev, kb.find)) {
-        ev.preventDefault();
-        openSearch();
-      } else if (matchesShortcut(ev, kb.newTab)) {
-        ev.preventDefault();
-        workspace.createTab();
-      } else if (matchesShortcut(ev, kb.closeTab)) {
-        ev.preventDefault();
-        if (workspace.hasMultiplePanesInActiveTab()) {
-          workspace.closeActivePane();
-        } else {
-          workspace.closeTab();
+      if (settingsModal.isModalOpen() || palette.isPaletteOpen()) {
+        const kb = bundle.settings.keybindings;
+        if (settingsModal.isModalOpen() && matchesShortcut(ev, kb.openSettings)) {
+          ev.preventDefault();
+          settingsModal.requestClose();
+        } else if (palette.isPaletteOpen() && matchesShortcut(ev, kb.commandPalette)) {
+          ev.preventDefault();
+          palette.close();
         }
-      } else if (matchesShortcut(ev, kb.nextTab)) {
+        return;
+      }
+
+      const entry = findShortcut(ev);
+      if (entry) {
         ev.preventDefault();
-        workspace.cycleTab(1);
-      } else if (matchesShortcut(ev, kb.prevTab)) {
-        ev.preventDefault();
-        workspace.cycleTab(-1);
-      } else if (matchesShortcut(ev, kb.splitVertical)) {
-        ev.preventDefault();
-        workspace.splitActive('vertical');
-      } else if (matchesShortcut(ev, kb.splitHorizontal)) {
-        ev.preventDefault();
-        workspace.splitActive('horizontal');
-      } else if (matchesShortcut(ev, kb.closePane)) {
-        ev.preventDefault();
-        workspace.closeActivePane();
-      } else if (matchesShortcut(ev, kb.focusLeft)) {
-        ev.preventDefault();
-        workspace.focusDirection('left');
-      } else if (matchesShortcut(ev, kb.focusRight)) {
-        ev.preventDefault();
-        workspace.focusDirection('right');
-      } else if (matchesShortcut(ev, kb.focusUp)) {
-        ev.preventDefault();
-        workspace.focusDirection('up');
-      } else if (matchesShortcut(ev, kb.focusDown)) {
-        ev.preventDefault();
-        workspace.focusDirection('down');
-      } else if (matchesShortcut(ev, kb.toggleAlwaysOnTop)) {
-        ev.preventDefault();
-        void toggleAlwaysOnTop();
-      } else {
-        for (const p of bundle.settings.profiles) {
-          if (p.shortcut && matchesShortcut(ev, p.shortcut)) {
-            ev.preventDefault();
-            workspace.createTab(p);
-            return;
-          }
-        }
+        entry.run();
       }
     },
     true
   );
 
-  // Eventos do Backend Rust (saída PTY em lotes de 4ms, fim do shell e hot-reload)
-  await onPtyOutput(({ id, data }) => {
-    workspace.findPaneByPtyId(id)?.writeOutput(data);
-  });
-
-  await onPtyExit(({ id, exitCode }) => {
-    workspace.findPaneByPtyId(id)?.handleProcessExit(exitCode);
-  });
-
+  // Hot-reload do backend Rust (a saída PTY agora flui por pane via Channel)
   await onConfigReloaded(async (reloaded) => {
     bundle = reloaded;
+    reportSettingsError(reloaded);
     await loadUserFonts(bundle.fonts);
-    applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+    // Com o modal aberto o preview do rascunho tem prioridade; o estado salvo volta ao fechar
+    if (!settingsModal.isModalOpen()) {
+      applyCommitted();
+    }
     renderProfileDropdown();
     if (snippetPersistTimer === null) {
       if (
@@ -1534,20 +1623,28 @@ async function bootstrap(): Promise<void> {
       persistSnippetStateToStorage();
     }
     renderSnippetsDock();
+    quickPaths = await listQuickPaths().catch(() => quickPaths);
   });
 
+  // Resize coalescido por frame
+  let resizeRaf = 0;
   window.addEventListener('resize', () => {
-    fitPopularChips();
-    updateCrtSafePadding(activeSettings);
-    shaderOverlay.resize();
-    cursorFx.resize();
-    workspace.fitAllVisible();
+    if (resizeRaf) return;
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      fitPopularChips();
+      updateCrtSafePadding(activeSettings);
+      shaderOverlay.resize();
+      cursorFx.resize();
+      workspace.fitAllVisible();
+    });
   });
 
   initSnippetsDock();
-  applyAllVisuals(bundle.settings, bundle.themes, bundle.customCss);
+  applyCommitted();
   renderProfileDropdown();
-  workspace.createTab();
+  void workspace.createTab();
+  reportSettingsError(bundle);
 }
 
 void bootstrap();

@@ -1,11 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissões padrão do CajuTerm para janela frameless, eventos PTY, shell e atalhos globais",
+  "description": "Permissões padrão do CajuTerm para janela frameless, canais PTY e atalhos globais",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:event:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-maximize",
@@ -20,7 +19,6 @@
     "core:window:allow-set-position",
     "core:window:allow-is-maximized",
     "core:window:allow-is-visible",
-    "shell:allow-open",
     "global-shortcut:default"
   ]
 }

@@ -27,7 +27,6 @@ fn main() {
     let quake_state = Arc::new(QuakeState::new());
 
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -88,7 +87,18 @@ fn main() {
             commands::list_quick_paths,
         ]);
 
-    if let Err(err) = builder.run(tauri::generate_context!()) {
-        eprintln!("Erro ao executar CajuTerm: {err}");
-    }
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("Erro ao executar CajuTerm: {err}");
+            return;
+        }
+    };
+
+    app.run(move |_app, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Encerra shells e fecha os ConPTYs (ClosePseudoConsole) antes do processo sair.
+            pty_manager.kill_all();
+        }
+    });
 }

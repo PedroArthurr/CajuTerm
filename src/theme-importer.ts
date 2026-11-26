@@ -8,16 +8,108 @@ function slugify(name: string): string {
   return s || `imported-${Date.now()}`;
 }
 
-function normalizeColor(raw: string | undefined, fallback: string): string {
-  if (!raw) return fallback;
-  const cleaned = raw.trim().replace(/^['"]|['"]$/g, '');
-  if (cleaned.startsWith('0x') && cleaned.length >= 8) {
-    return `#${cleaned.slice(2, 8)}`;
+/** Gera um id único acrescentando -2, -3... quando já existe. */
+function uniqueId(base: string, taken: Set<string>): string {
+  let id = base;
+  let n = 2;
+  while (taken.has(id)) {
+    id = `${base}-${n++}`;
   }
-  if (/^#[0-9a-fA-F]{6}$/.test(cleaned) || /^#[0-9a-fA-F]{3}$/.test(cleaned)) {
-    return cleaned;
+  taken.add(id);
+  return id;
+}
+
+/**
+ * Normaliza cores para #rrggbb: expande #rgb, descarta alpha de #rrggbbaa / #rgba
+ * e aceita 0xRRGGBB (Alacritty).
+ */
+export function normalizeColor(raw: string | undefined, fallback: string): string {
+  if (!raw || typeof raw !== 'string') return fallback;
+  let cleaned = raw.trim().replace(/^['"]|['"]$/g, '').trim();
+  if (/^0x[0-9a-fA-F]{6,8}$/.test(cleaned)) {
+    cleaned = `#${cleaned.slice(2)}`;
+  }
+  if (!/^#[0-9a-fA-F]+$/.test(cleaned)) return fallback;
+  const hex = cleaned.slice(1).toLowerCase();
+  if (hex.length === 3 || hex.length === 4) {
+    return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
+  }
+  if (hex.length === 6 || hex.length === 8) {
+    return `#${hex.slice(0, 6)}`;
   }
   return fallback;
+}
+
+/**
+ * Remove comentários (// e bloco) e vírgulas finais de JSONC (settings.json do
+ * Windows Terminal), respeitando o conteúdo de strings.
+ */
+export function stripJsonc(text: string): string {
+  let out = '';
+  let inString = false;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inString) {
+      out += ch;
+      if (ch === '\\') {
+        out += next ?? '';
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+
+  // Segunda passada: remove vírgulas finais antes de } ou ]
+  let result = '';
+  inString = false;
+  for (let j = 0; j < out.length; j++) {
+    const ch = out[j];
+    if (inString) {
+      result += ch;
+      if (ch === '\\') {
+        result += out[j + 1] ?? '';
+        j++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      result += ch;
+      continue;
+    }
+    if (ch === ',') {
+      let k = j + 1;
+      while (k < out.length && /\s/.test(out[k])) k++;
+      if (out[k] === '}' || out[k] === ']') continue;
+    }
+    result += ch;
+  }
+  return result;
 }
 
 function buildThemeObject(name: string, colors: ThemeColors): ThemeConfig {
@@ -34,22 +126,31 @@ function buildThemeObject(name: string, colors: ThemeColors): ThemeConfig {
 }
 
 /**
- * Converte um esquema do Windows Terminal (JSON) para ThemeConfig.
+ * Converte esquemas do Windows Terminal (JSON/JSONC: esquema único, array ou
+ * settings.json completo com "schemes") para ThemeConfig[].
  */
-function parseWindowsTerminal(rawText: string): ThemeConfig | null {
+function parseWindowsTerminal(rawText: string): ThemeConfig[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawText);
   } catch {
-    return null;
+    try {
+      parsed = JSON.parse(stripJsonc(rawText));
+    } catch {
+      return [];
+    }
   }
 
-  const candidate = Array.isArray(parsed)
-    ? parsed[0]
+  const candidates: unknown[] = Array.isArray(parsed)
+    ? parsed
     : typeof parsed === 'object' && parsed !== null && 'schemes' in parsed && Array.isArray((parsed as { schemes: unknown[] }).schemes)
-      ? (parsed as { schemes: unknown[] }).schemes[0]
-      : parsed;
+      ? (parsed as { schemes: unknown[] }).schemes
+      : [parsed];
 
+  return candidates.map(schemeToTheme).filter((th): th is ThemeConfig => th !== null);
+}
+
+function schemeToTheme(candidate: unknown): ThemeConfig | null {
   if (!candidate || typeof candidate !== 'object') return null;
   const obj = candidate as Record<string, string | undefined>;
   if (!obj.background || !obj.foreground) return null;
@@ -238,14 +339,26 @@ function parseAlacritty(rawText: string, hintName?: string): ThemeConfig | null 
 }
 
 /**
- * Tenta detectar e importar automaticamente temas do Windows Terminal (JSON),
- * iTerm2 (.itermcolors XML) ou Alacritty (TOML / YAML).
+ * Detecta e importa temas do Windows Terminal (JSON/JSONC, um ou vários esquemas),
+ * iTerm2 (.itermcolors XML) ou Alacritty (TOML / YAML). Ids que colidem com
+ * `existingIds` (ou entre si) recebem sufixo -2, -3...
  */
-export function importExternalTheme(rawText: string, fileName?: string): ThemeConfig | null {
+export function importExternalThemes(
+  rawText: string,
+  fileName?: string,
+  existingIds: Iterable<string> = []
+): ThemeConfig[] {
   const hint = fileName ? fileName.replace(/\.[^.]+$/, '') : undefined;
-  return (
-    parseWindowsTerminal(rawText) ??
-    parseIterm2(rawText, hint) ??
-    parseAlacritty(rawText, hint)
-  );
+  let themes = parseWindowsTerminal(rawText);
+  if (themes.length === 0) {
+    const single = parseIterm2(rawText, hint) ?? parseAlacritty(rawText, hint);
+    themes = single ? [single] : [];
+  }
+  const taken = new Set(existingIds);
+  return themes.map((th) => ({ ...th, id: uniqueId(th.id, taken) }));
+}
+
+/** Compatibilidade: importa apenas o primeiro esquema reconhecido. */
+export function importExternalTheme(rawText: string, fileName?: string): ThemeConfig | null {
+  return importExternalThemes(rawText, fileName)[0] ?? null;
 }

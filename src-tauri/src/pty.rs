@@ -1,36 +1,45 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::ipc::Channel;
 
-/// Evento emitido para o frontend com lote (~4 ms) de saída UTF-8 válida do terminal.
+/// Mensagem única do canal por sessão (`tauri::ipc::Channel`) enviada ao frontend.
+/// Serializa como `{ kind: "data", data }` ou `{ kind: "exit", exitCode }`.
 #[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PtyOutputEvent {
-    pub id: u32,
-    pub data: String,
-}
-
-/// Evento emitido quando o processo do shell dentro do ConPTY é encerrado.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PtyExitEvent {
-    pub id: u32,
-    pub exit_code: Option<u32>,
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PtyEvent {
+    Data {
+        data: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Exit {
+        exit_code: Option<u32>,
+    },
 }
 
 struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    /// Fila de entrada consumida pela thread de escrita dedicada (preserva a ordem dos bytes).
+    input: mpsc::Sender<Vec<u8>>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
     killed: Arc<AtomicBool>,
+}
+
+impl PtySession {
+    /// Mata o shell; o drop do master (fim desta função) chama ClosePseudoConsole,
+    /// que encerra também os processos de console ainda anexados à sessão.
+    fn terminate(mut self) {
+        self.killed.store(true, Ordering::SeqCst);
+        // portable-pty 0.8.1 (Windows) retorna Err mesmo em sucesso; o resultado não é confiável.
+        let _ = self.killer.kill();
+    }
 }
 
 /// Gerenciador thread-safe das sessões PTY ativas (id -> sessão ConPTY).
@@ -39,10 +48,19 @@ pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<u32, PtySession>>>,
 }
 
-enum ReadChunk {
+enum ReadMsg {
     Bytes(Vec<u8>),
-    Eof(Option<u32>),
+    /// Enviado pela thread waiter quando o processo do shell termina.
+    Exit(Option<u32>),
 }
+
+const READ_BUF_BYTES: usize = 65_536;
+/// Fila limitada: com o frontend lento, o leitor bloqueia e o ConPTY aplica backpressure no filho.
+const READ_QUEUE_DEPTH: usize = 64;
+const BATCH_WINDOW: Duration = Duration::from_millis(4);
+const MAX_BATCH_BYTES: usize = 131_072;
+/// Tempo máximo para drenar a saída restante depois que o shell terminou.
+const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(1500);
 
 impl PtyManager {
     pub fn new() -> Self {
@@ -73,17 +91,23 @@ impl PtyManager {
         }
     }
 
-    /// Spawna uma nova sessão PTY com ConPTY, inicia thread de leitura dedicada
-    /// e loop de batching de ~4 ms para envio eficiente via eventos Tauri.
+    /// Spawna uma nova sessão PTY com ConPTY. Threads por sessão:
+    /// - leitor: read() bloqueante (64 KB) -> fila limitada;
+    /// - batcher: agrega ~4 ms, decodifica UTF-8 preservando sequências cortadas, envia no `Channel`;
+    /// - escritor: consome a fila de entrada (pty_write só enfileira);
+    /// - waiter: `wait()` no filho -> remove a sessão (ClosePseudoConsole) -> código de saída real.
+    ///
+    /// O evento `exit` é enviado exatamente uma vez, pelo batcher, depois de toda a saída drenada.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &self,
-        app: AppHandle,
         shell: Option<String>,
         args: Option<Vec<String>>,
         cwd: Option<String>,
         env: Option<HashMap<String, String>>,
         cols: u16,
         rows: u16,
+        on_event: Channel<PtyEvent>,
     ) -> Result<u32, String> {
         let safe_cols = cols.max(2);
         let safe_rows = rows.max(1);
@@ -117,7 +141,7 @@ impl PtyManager {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "CajuTerm");
-        cmd.env("TERM_PROGRAM_VERSION", "1.0.0");
+        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         cmd.env("WT_SESSION", "cajuterm-conpty");
 
         if let Some(custom_env) = env {
@@ -128,163 +152,109 @@ impl PtyManager {
             }
         }
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Falha ao iniciar shell '{resolved_shell}': {e}"))?;
 
-        // Fecha o descritor slave no processo pai para que EOF aconteça corretamente quando o shell sair.
+        // Libera a referência do slave no processo pai.
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("Falha ao clonar leitor PTY: {e}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("Falha ao obter escritor PTY: {e}"))?;
-
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let child_arc = Arc::new(Mutex::new(child));
-        let killed_flag = Arc::new(AtomicBool::new(false));
-
-        let session = PtySession {
-            master: Arc::new(Mutex::new(pair.master)),
-            writer: Arc::new(Mutex::new(writer)),
-            child: Arc::clone(&child_arc),
-            killed: Arc::clone(&killed_flag),
+        let reader = match pair.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("Falha ao clonar leitor PTY: {e}"));
+            }
+        };
+        let writer = match pair.master.take_writer() {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("Falha ao obter escritor PTY: {e}"));
+            }
         };
 
-        self.sessions.lock().insert(id, session);
-
-        let (tx, rx) = mpsc::channel::<ReadChunk>();
-        let reader_child = Arc::clone(&child_arc);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let killed_flag = Arc::new(AtomicBool::new(false));
+        let killer = child.clone_killer();
+        let (tx, rx) = mpsc::sync_channel::<ReadMsg>(READ_QUEUE_DEPTH);
+        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
 
         // Thread 1: leitura bloqueante dedicada do stream ConPTY
-        std::thread::Builder::new()
+        let reader_tx = tx.clone();
+        if let Err(e) = std::thread::Builder::new()
             .name(format!("cajuterm-pty-read-{id}"))
-            .spawn(move || {
-                let mut buf = [0u8; 8192];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => {
-                            let exit_code = reader_child
-                                .lock()
-                                .wait()
-                                .ok()
-                                .map(|status| status.exit_code());
-                            let _ = tx.send(ReadChunk::Eof(exit_code));
-                            break;
-                        }
-                        Ok(n) => {
-                            if tx.send(ReadChunk::Bytes(buf[..n].to_vec())).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => {
-                            let exit_code = reader_child
-                                .lock()
-                                .try_wait()
-                                .ok()
-                                .flatten()
-                                .map(|status| status.exit_code());
-                            let _ = tx.send(ReadChunk::Eof(exit_code));
-                            break;
-                        }
-                    }
-                }
-            })
-            .map_err(|e| format!("Falha ao criar thread de leitura PTY: {e}"))?;
+            .spawn(move || read_loop(reader, reader_tx))
+        {
+            let _ = child.kill();
+            return Err(format!("Falha ao criar thread de leitura PTY: {e}"));
+        }
 
-        let sessions_ref = Arc::clone(&self.sessions);
+        // Thread 2: escrita ordenada (write_all bloqueante fora da thread principal)
+        if let Err(e) = std::thread::Builder::new()
+            .name(format!("cajuterm-pty-write-{id}"))
+            .spawn(move || write_loop(writer, input_rx))
+        {
+            let _ = child.kill();
+            return Err(format!("Falha ao criar thread de escrita PTY: {e}"));
+        }
+
+        // Thread 3: agregação (batching) + decodificação UTF-8 + entrega no Channel
         let batch_killed = Arc::clone(&killed_flag);
-
-        // Thread 2: agregação (batching) de ~4 ms + decodificação UTF-8 segura entre bordas
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name(format!("cajuterm-pty-batch-{id}"))
+            .spawn(move || batch_loop(rx, on_event, batch_killed))
+        {
+            let _ = child.kill();
+            return Err(format!("Falha ao criar thread de batching PTY: {e}"));
+        }
+
+        // A sessão entra no mapa antes do waiter existir, para que o waiter sempre a encontre.
+        self.sessions.lock().insert(
+            id,
+            PtySession {
+                master: Arc::new(Mutex::new(pair.master)),
+                input: input_tx,
+                killer,
+                killed: killed_flag,
+            },
+        );
+
+        // Thread 4: waiter — detecta a saída do shell mesmo que o ConPTY não feche o pipe de saída.
+        let sessions_ref = Arc::clone(&self.sessions);
+        let spawn_waiter = std::thread::Builder::new()
+            .name(format!("cajuterm-pty-wait-{id}"))
             .spawn(move || {
-                const BATCH_WINDOW: Duration = Duration::from_millis(4);
-                const MAX_BATCH_BYTES: usize = 65_536;
+                let exit_code = child.wait().ok().map(|status| status.exit_code());
+                // Remove e dropa a sessão fora do lock: drop do master -> ClosePseudoConsole -> EOF no leitor.
+                let session = sessions_ref.lock().remove(&id);
+                drop(session);
+                let _ = tx.send(ReadMsg::Exit(exit_code));
+            });
 
-                let mut pending = Vec::<u8>::with_capacity(16_384);
-
-                'outer: loop {
-                    let first = match rx.recv() {
-                        Ok(msg) => msg,
-                        Err(_) => break,
-                    };
-
-                    let mut reached_eof = false;
-                    let mut exit_code: Option<u32> = None;
-
-                    match first {
-                        ReadChunk::Bytes(bytes) => pending.extend_from_slice(&bytes),
-                        ReadChunk::Eof(code) => {
-                            reached_eof = true;
-                            exit_code = code;
-                        }
-                    }
-
-                    let batch_start = Instant::now();
-                    while !reached_eof && pending.len() < MAX_BATCH_BYTES {
-                        let elapsed = batch_start.elapsed();
-                        if elapsed >= BATCH_WINDOW {
-                            break;
-                        }
-                        let remaining = BATCH_WINDOW.saturating_sub(elapsed);
-                        match rx.recv_timeout(remaining) {
-                            Ok(ReadChunk::Bytes(bytes)) => pending.extend_from_slice(&bytes),
-                            Ok(ReadChunk::Eof(code)) => {
-                                reached_eof = true;
-                                exit_code = code;
-                                break;
-                            }
-                            Err(mpsc::RecvTimeoutError::Timeout) => break,
-                            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                reached_eof = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    let text = extract_valid_utf8(&mut pending, reached_eof);
-                    if !text.is_empty() {
-                        let _ = app.emit("pty-output", PtyOutputEvent { id, data: text });
-                    }
-
-                    if reached_eof {
-                        sessions_ref.lock().remove(&id);
-                        if !batch_killed.load(Ordering::Relaxed) {
-                            let _ = app.emit("pty-exit", PtyExitEvent { id, exit_code });
-                        }
-                        break 'outer;
-                    }
-                }
-            })
-            .map_err(|e| format!("Falha ao criar thread de batching PTY: {e}"))?;
+        if let Err(e) = spawn_waiter {
+            // O closure (com `child` e `tx`) já foi descartado; encerra via killer da sessão.
+            let session = self.sessions.lock().remove(&id);
+            if let Some(session) = session {
+                session.terminate();
+            }
+            return Err(format!("Falha ao criar thread de espera PTY: {e}"));
+        }
 
         Ok(id)
     }
 
-    /// Escreve entrada do teclado/clipboard no PTY correspondente.
-    pub fn write(&self, id: u32, data: &str) -> Result<(), String> {
-        let writer_arc = {
-            let guard = self.sessions.lock();
-            guard
-                .get(&id)
-                .map(|s| Arc::clone(&s.writer))
-                .ok_or_else(|| format!("Sessão PTY {id} não encontrada"))?
-        };
-
-        let mut writer = writer_arc.lock();
-        writer
-            .write_all(data.as_bytes())
-            .map_err(|e| format!("Falha ao escrever no PTY {id}: {e}"))?;
-        writer
-            .flush()
-            .map_err(|e| format!("Falha ao realizar flush no PTY {id}: {e}"))?;
-        Ok(())
+    /// Enfileira entrada do teclado/clipboard para a thread de escrita da sessão (não bloqueia).
+    pub fn write(&self, id: u32, data: String) -> Result<(), String> {
+        let guard = self.sessions.lock();
+        let session = guard
+            .get(&id)
+            .ok_or_else(|| format!("Sessão PTY {id} não encontrada"))?;
+        session
+            .input
+            .send(data.into_bytes())
+            .map_err(|_| format!("Falha ao escrever no PTY {id}: entrada encerrada"))
     }
 
     /// Atualiza as dimensões (colunas x linhas) do ConPTY.
@@ -312,31 +282,111 @@ impl PtyManager {
         Ok(())
     }
 
-    /// Encerra explicitamente a sessão PTY e mata o processo filho.
+    /// Encerra explicitamente a sessão PTY e mata o processo filho (sem evento `exit`).
     pub fn kill(&self, id: u32) -> Result<(), String> {
         let session = self.sessions.lock().remove(&id);
         if let Some(session) = session {
-            session.killed.store(true, Ordering::Relaxed);
-            if let Err(err) = session.child.lock().kill() {
-                // Se o processo já tiver encerrado naturalmente, não falhar de forma ruidosa
-                let already_exited = session
-                    .child
-                    .lock()
-                    .try_wait()
-                    .ok()
-                    .flatten()
-                    .is_some();
-                if !already_exited {
-                    return Err(format!("Falha ao finalizar processo do PTY {id}: {err}"));
+            session.terminate();
+        }
+        Ok(())
+    }
+
+    /// Encerra todas as sessões (saída do app).
+    pub fn kill_all(&self) {
+        let sessions: Vec<PtySession> = self.sessions.lock().drain().map(|(_, s)| s).collect();
+        for session in sessions {
+            session.terminate();
+        }
+    }
+}
+
+fn read_loop(mut reader: Box<dyn Read + Send>, tx: mpsc::SyncSender<ReadMsg>) {
+    let mut buf = vec![0u8; READ_BUF_BYTES];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if tx.send(ReadMsg::Bytes(buf[..n].to_vec())).is_err() {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+}
+
+fn write_loop(mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
+    while let Ok(bytes) = rx.recv() {
+        if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() {
+            break;
+        }
+    }
+}
+
+fn batch_loop(rx: mpsc::Receiver<ReadMsg>, channel: Channel<PtyEvent>, killed: Arc<AtomicBool>) {
+    let mut pending = Vec::<u8>::with_capacity(READ_BUF_BYTES);
+    let mut exit_code: Option<u32> = None;
+    let mut exit_deadline: Option<Instant> = None;
+
+    loop {
+        // Termina quando leitor + waiter fecharam a fila, ou quando o prazo de drenagem pós-exit expira.
+        let mut finished = false;
+
+        let first = match exit_deadline {
+            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            Some(deadline) => rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        };
+
+        match first {
+            Ok(ReadMsg::Bytes(bytes)) => pending.extend_from_slice(&bytes),
+            Ok(ReadMsg::Exit(code)) => {
+                exit_code = code;
+                exit_deadline = Some(Instant::now() + EXIT_DRAIN_GRACE);
+                continue;
+            }
+            Err(_) => finished = true,
+        }
+
+        if !finished {
+            let batch_start = Instant::now();
+            while pending.len() < MAX_BATCH_BYTES {
+                let remaining = BATCH_WINDOW.saturating_sub(batch_start.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                match rx.recv_timeout(remaining) {
+                    Ok(ReadMsg::Bytes(bytes)) => pending.extend_from_slice(&bytes),
+                    Ok(ReadMsg::Exit(code)) => {
+                        exit_code = code;
+                        exit_deadline = Some(Instant::now() + EXIT_DRAIN_GRACE);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
                 }
             }
         }
-        Ok(())
+
+        let text = extract_valid_utf8(&mut pending, finished);
+        if !text.is_empty() && !killed.load(Ordering::SeqCst) {
+            let _ = channel.send(PtyEvent::Data { data: text });
+        }
+
+        if finished {
+            break;
+        }
+    }
+
+    if !killed.load(Ordering::SeqCst) {
+        let _ = channel.send(PtyEvent::Exit { exit_code });
     }
 }
 
 /// Extrai uma String UTF-8 válida do buffer acumulado, preservando sequências
-/// multi-byte incompletas no final do vetor para o próximo lote de 4 ms.
+/// multi-byte incompletas no final do vetor para o próximo lote.
 fn extract_valid_utf8(pending: &mut Vec<u8>, flush_all: bool) -> String {
     if pending.is_empty() {
         return String::new();
@@ -421,4 +471,22 @@ fn resolve_working_dir(raw_cwd: Option<&str>) -> Option<PathBuf> {
         }
     }
     dirs::home_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_valid_utf8;
+
+    #[test]
+    fn carries_split_multibyte_sequence() {
+        let bytes = "aé€😀".as_bytes();
+        for split in 0..=bytes.len() {
+            let mut pending = bytes[..split].to_vec();
+            let mut out = extract_valid_utf8(&mut pending, false);
+            pending.extend_from_slice(&bytes[split..]);
+            out.push_str(&extract_valid_utf8(&mut pending, false));
+            assert_eq!(out, "aé€😀", "split at {split}");
+            assert!(pending.is_empty());
+        }
+    }
 }

@@ -5,11 +5,12 @@ use std::sync::Arc;
 use base64::Engine;
 use parking_lot::Mutex;
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
-use crate::config::{AppSettings, ConfigBundle, ConfigState, ThemeConfig};
-use crate::pty::PtyManager;
+use crate::config::{AppSettings, ConfigBundle, ConfigState, ThemeConfig, MAX_FONT_BYTES};
+use crate::pty::{PtyEvent, PtyManager};
 
 /// Estado que memoriza a geometria anterior e o atalho global atual do Modo Quake.
 pub struct QuakeState {
@@ -28,9 +29,20 @@ impl QuakeState {
     }
 }
 
+/// Executa trabalho de IO fora da thread principal e do executor async.
+async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("Falha interna em tarefa de IO: {e}"))?
+}
+
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn pty_spawn(
-    app: AppHandle,
+pub async fn pty_spawn(
     pty: State<'_, Arc<PtyManager>>,
     shell: Option<String>,
     args: Option<Vec<String>>,
@@ -38,17 +50,20 @@ pub fn pty_spawn(
     env: Option<HashMap<String, String>>,
     cols: u16,
     rows: u16,
+    on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
-    pty.spawn(app, shell, args, cwd, env, cols, rows)
+    let pty = Arc::clone(pty.inner());
+    run_blocking(move || pty.spawn(shell, args, cwd, env, cols, rows, on_event)).await
 }
 
+/// Síncrono de propósito (preserva a ordem de chegada): apenas enfileira para a thread de escrita.
 #[tauri::command]
 pub fn pty_write(
     pty: State<'_, Arc<PtyManager>>,
     id: u32,
     data: String,
 ) -> Result<(), String> {
-    pty.write(id, &data)
+    pty.write(id, data)
 }
 
 #[tauri::command]
@@ -62,69 +77,90 @@ pub fn pty_resize(
 }
 
 #[tauri::command]
-pub fn pty_kill(pty: State<'_, Arc<PtyManager>>, id: u32) -> Result<(), String> {
-    pty.kill(id)
+pub async fn pty_kill(pty: State<'_, Arc<PtyManager>>, id: u32) -> Result<(), String> {
+    let pty = Arc::clone(pty.inner());
+    run_blocking(move || pty.kill(id)).await
 }
 
 #[tauri::command]
-pub fn get_config_bundle(config: State<'_, Arc<ConfigState>>) -> Result<ConfigBundle, String> {
-    config.load_bundle()
+pub async fn get_config_bundle(
+    config: State<'_, Arc<ConfigState>>,
+) -> Result<ConfigBundle, String> {
+    let config = Arc::clone(config.inner());
+    run_blocking(move || config.load_bundle()).await
 }
 
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     config: State<'_, Arc<ConfigState>>,
     settings: AppSettings,
 ) -> Result<ConfigBundle, String> {
-    config.save_settings(&settings)
+    let config = Arc::clone(config.inner());
+    run_blocking(move || config.save_settings(&settings)).await
 }
 
 #[tauri::command]
-pub fn save_raw_settings(
+pub async fn save_raw_settings(
     config: State<'_, Arc<ConfigState>>,
     raw_json: String,
 ) -> Result<ConfigBundle, String> {
-    config.save_raw_settings(&raw_json)
+    let config = Arc::clone(config.inner());
+    run_blocking(move || config.save_raw_settings(&raw_json)).await
 }
 
 #[tauri::command]
-pub fn save_custom_css(
+pub async fn save_custom_css(
     config: State<'_, Arc<ConfigState>>,
     css: String,
 ) -> Result<ConfigBundle, String> {
-    config.save_custom_css(&css)
+    let config = Arc::clone(config.inner());
+    run_blocking(move || config.save_custom_css(&css)).await
 }
 
 #[tauri::command]
-pub fn save_theme(
+pub async fn save_theme(
     config: State<'_, Arc<ConfigState>>,
     theme: ThemeConfig,
 ) -> Result<ConfigBundle, String> {
-    config.save_theme(&theme)
+    let config = Arc::clone(config.inner());
+    run_blocking(move || config.save_theme(&theme)).await
 }
 
 #[tauri::command]
-pub fn delete_theme(
+pub async fn delete_theme(
     config: State<'_, Arc<ConfigState>>,
     theme_id: String,
 ) -> Result<ConfigBundle, String> {
-    config.delete_theme(&theme_id)
+    let config = Arc::clone(config.inner());
+    run_blocking(move || config.delete_theme(&theme_id)).await
 }
 
 #[tauri::command]
-pub fn install_font_base64(
+pub async fn install_font_base64(
     config: State<'_, Arc<ConfigState>>,
     file_name: String,
     base64_data: String,
 ) -> Result<ConfigBundle, String> {
-    let payload = base64_data
-        .split(',')
-        .next_back()
-        .unwrap_or(base64_data.as_str());
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .map_err(|e| format!("Falha ao decodificar arquivo de fonte: {e}"))?;
-    config.save_font_bytes(&file_name, &bytes)
+    let config = Arc::clone(config.inner());
+    run_blocking(move || {
+        let payload = base64_data
+            .split(',')
+            .next_back()
+            .unwrap_or(base64_data.as_str())
+            .trim();
+        // Rejeita antes de decodificar: base64 ocupa ~4/3 do tamanho binário.
+        if payload.len() / 4 * 3 > MAX_FONT_BYTES + 3 {
+            return Err(format!(
+                "Arquivo de fonte muito grande (limite {} MB)",
+                MAX_FONT_BYTES / (1024 * 1024)
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .map_err(|e| format!("Falha ao decodificar arquivo de fonte: {e}"))?;
+        config.save_font_bytes(&file_name, &bytes)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -145,20 +181,66 @@ pub fn open_config_dir(config: State<'_, Arc<ConfigState>>) -> Result<(), String
     }
 }
 
+/// Abre http/https/mailto no handler padrão via ShellExecuteW — sem passar por `cmd.exe`,
+/// então `&`, `|`, `^` etc. na URL não são interpretados como comandos.
 #[tauri::command]
-pub fn open_external_url(url: String) -> Result<(), String> {
-    let trimmed = url.trim();
-    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
-        return Err("Somente URLs http:// ou https:// são permitidas".to_string());
+pub async fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(url.trim()).map_err(|e| format!("URL inválida: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {
+            if parsed.host_str().is_none_or(str::is_empty) {
+                return Err("URL sem host".to_string());
+            }
+        }
+        "mailto" => {}
+        _ => return Err("Somente URLs http://, https:// ou mailto: são permitidas".to_string()),
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", trimmed])
-            .spawn()
-            .map_err(|e| format!("Falha ao abrir URL externa: {e}"))?;
+    let target = parsed.to_string();
+    run_blocking(move || shell_open(&target)).await
+}
+
+#[cfg(target_os = "windows")]
+fn shell_open(target: &str) -> Result<(), String> {
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let file: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+
+    // SAFETY: ponteiros apontam para buffers UTF-16 terminados em NUL vivos durante a chamada.
+    let code = unsafe {
+        let hr = CoInitializeEx(
+            std::ptr::null(),
+            (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+        );
+        let result = ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if hr >= 0 {
+            CoUninitialize();
+        }
+        result as isize
+    };
+
+    // ShellExecuteW: valores > 32 indicam sucesso.
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(format!("Falha ao abrir URL externa (ShellExecute código {code})"))
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn shell_open(_target: &str) -> Result<(), String> {
     Ok(())
 }
 
@@ -278,24 +360,37 @@ pub fn register_quake_shortcut(
     shortcut_str: &str,
 ) -> Result<(), String> {
     let gs = app.global_shortcut();
-
-    if let Some(prev) = quake.current_shortcut.lock().take() {
-        if let Ok(parsed) = prev.parse::<Shortcut>() {
-            let _ = gs.unregister(parsed);
-        }
-    }
-
     let trimmed = shortcut_str.trim();
+    let prev: Option<Shortcut> = quake
+        .current_shortcut
+        .lock()
+        .clone()
+        .and_then(|p| p.parse::<Shortcut>().ok());
+
     if trimmed.is_empty() {
+        if let Some(prev) = prev {
+            let _ = gs.unregister(prev);
+        }
+        *quake.current_shortcut.lock() = None;
         return Ok(());
     }
 
+    // Valida e registra o novo ANTES de soltar o antigo: entrada inválida mantém o atalho atual.
     let parsed: Shortcut = trimmed
         .parse()
         .map_err(|e| format!("Atalho global inválido '{trimmed}': {e}"))?;
 
+    if prev == Some(parsed) {
+        *quake.current_shortcut.lock() = Some(trimmed.to_string());
+        return Ok(());
+    }
+
     gs.register(parsed)
         .map_err(|e| format!("Não foi possível registrar atalho global '{trimmed}': {e}"))?;
+
+    if let Some(prev) = prev {
+        let _ = gs.unregister(prev);
+    }
 
     *quake.current_shortcut.lock() = Some(trimmed.to_string());
     Ok(())
@@ -309,41 +404,72 @@ pub struct QuickPathEntry {
     pub group: String,
 }
 
+/// Lê `settings.quickPaths`. Item comum -> entrada em "Favoritos";
+/// item terminando em `/*` -> uma entrada por subpasta, agrupadas pelo diretório raiz.
 #[tauri::command]
-pub fn list_quick_paths() -> Result<Vec<QuickPathEntry>, String> {
-    let mut entries = vec![
-        QuickPathEntry {
-            label: "virtus".to_string(),
-            path: "Y:/virtus/virtus".to_string(),
-            group: "Favoritos".to_string(),
-        },
-        QuickPathEntry {
-            label: "Github-PA".to_string(),
-            path: "Y:/Github-PA".to_string(),
-            group: "Favoritos".to_string(),
-        },
-    ];
+pub async fn list_quick_paths(
+    config: State<'_, Arc<ConfigState>>,
+) -> Result<Vec<QuickPathEntry>, String> {
+    let config = Arc::clone(config.inner());
+    run_blocking(move || Ok(build_quick_paths(&config.quick_paths()))).await
+}
 
-    let github_pa = Path::new("Y:/Github-PA");
-    if github_pa.is_dir() {
+fn build_quick_paths(paths: &[String]) -> Vec<QuickPathEntry> {
+    let mut entries = Vec::new();
+
+    for raw in paths {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Some(root) = trimmed
+            .strip_suffix("/*")
+            .or_else(|| trimmed.strip_suffix("\\*"))
+        else {
+            let label = Path::new(trimmed)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(trimmed)
+                .to_string();
+            entries.push(QuickPathEntry {
+                label,
+                path: trimmed.to_string(),
+                group: "Favoritos".to_string(),
+            });
+            continue;
+        };
+
+        let root = root.trim_end_matches(['/', '\\']);
+        // "Y:" sozinho significa "diretório atual do drive Y"; força a raiz.
+        let group = if root.ends_with(':') {
+            format!("{root}/")
+        } else {
+            root.to_string()
+        };
+        let dir = Path::new(&group);
+        if !dir.is_dir() {
+            continue;
+        }
+
         let mut subdirs: Vec<QuickPathEntry> = Vec::new();
-        if let Ok(read_dir) = std::fs::read_dir(github_pa) {
+        if let Ok(read_dir) = std::fs::read_dir(dir) {
             for item in read_dir.flatten() {
                 let p = item.path();
                 if p.is_dir() {
                     if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
                         subdirs.push(QuickPathEntry {
                             label: name.to_string(),
-                            path: format!("Y:/Github-PA/{name}"),
-                            group: "Y:/Github-PA".to_string(),
+                            path: format!("{root}/{name}"),
+                            group: group.clone(),
                         });
                     }
                 }
             }
         }
-        subdirs.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        subdirs.sort_by_key(|e| e.label.to_lowercase());
         entries.extend(subdirs);
     }
 
-    Ok(entries)
+    entries
 }

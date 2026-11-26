@@ -154,6 +154,10 @@ export interface AppSettings {
   animations: AnimationConfig;
   sounds: SoundConfig;
   confirmClear: boolean;
+  /** Copia automaticamente o texto selecionado no terminal. */
+  copyOnSelect: boolean;
+  /** Pastas exibidas no menu de atalhos de pastas (📁) e na paleta. */
+  quickPaths: string[];
   activeSnippetAgent?: 'agy' | 'claude';
   snippetUsage?: Record<string, number>;
   customSnippets: SnippetItem[];
@@ -174,6 +178,8 @@ export interface ConfigBundle {
   customCss: string;
   themes: ThemeConfig[];
   fonts: FontAsset[];
+  /** Presente apenas quando settings.json falhou ao ser lido (backend manteve o último válido). */
+  settingsError?: string;
 }
 
 export interface CursorScreenPos {

@@ -26,8 +26,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data: blob:",
-      "dangerousDisableAssetCspModification": true
+      "csp": "default-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data: blob:; object-src 'none'; base-uri 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {

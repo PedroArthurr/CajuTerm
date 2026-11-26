@@ -260,6 +260,8 @@ export function DEFAULT_SETTINGS(): AppSettings {
       snippetSend: true,
     },
     confirmClear: true,
+    copyOnSelect: false,
+    quickPaths: ['Y:/virtus/virtus', 'Y:/Github-PA', 'Y:/Github-PA/*'],
     activeSnippetAgent: 'agy',
     snippetUsage: {},
     customSnippets: [],
@@ -352,8 +354,83 @@ export function hexToNormalizedRgb(hex: string): [number, number, number] {
   return [r / 255, g / 255, b / 255];
 }
 
+type Hsl = [number, number, number];
+
+function rgbToHsl(r: number, g: number, b: number): Hsl {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === rn) h = 60 * (((gn - bn) / d) % 6);
+  else if (max === gn) h = 60 * ((bn - rn) / d + 2);
+  else h = 60 * ((rn - gn) / d + 4);
+  return [(h + 360) % 360, s, l];
+}
+
+function hslToHex([h, s, l]: Hsl): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let rgb: [number, number, number];
+  if (hp < 1) rgb = [c, x, 0];
+  else if (hp < 2) rgb = [x, c, 0];
+  else if (hp < 3) rgb = [0, c, x];
+  else if (hp < 4) rgb = [0, x, c];
+  else if (hp < 5) rgb = [x, 0, c];
+  else rgb = [c, 0, x];
+  const m = l - c / 2;
+  return `#${rgb
+    .map((v) => Math.round(Math.max(0, Math.min(1, v + m)) * 255).toString(16).padStart(2, '0'))
+    .join('')}`;
+}
+
+/**
+ * Superfícies de painel (dropdowns, busca, modais, inputs) derivadas do fundo do tema.
+ * Os deslocamentos HSL são calculados a partir das cores originais do Caju Cyberpunk,
+ * então o tema padrão reproduz exatamente os hex antigos.
+ */
+const PANEL_BASE_BG = '#0b0716';
+const PANEL_REFS: Record<string, string> = {
+  '--caju-panel': '#120d22',
+  '--caju-panel-alt': '#130d24',
+  '--caju-panel-raised': '#140f26',
+  '--caju-input-bg': '#17112b',
+};
+
+const PANEL_DELTAS: Array<[string, Hsl]> = (() => {
+  const base = rgbToHsl(...hexToRgbTuple(PANEL_BASE_BG));
+  return Object.entries(PANEL_REFS).map(([name, hex]) => {
+    const ref = rgbToHsl(...hexToRgbTuple(hex));
+    return [name, [ref[0] - base[0], ref[1] - base[1], ref[2] - base[2]]];
+  });
+})();
+
+export function derivePanelColors(backgroundHex: string): Record<string, string> {
+  const [h, s, l] = rgbToHsl(...hexToRgbTuple(backgroundHex));
+  // Fundos claros: escurece em vez de clarear para manter o contraste dos painéis
+  const dir = l > 0.6 ? -1 : 1;
+  const out: Record<string, string> = {};
+  for (const [name, [dh, ds, dl]] of PANEL_DELTAS) {
+    out[name] = hslToHex([
+      h + dh,
+      Math.max(0, Math.min(1, s + ds)),
+      Math.max(0, Math.min(1, l + dir * dl)),
+    ]);
+  }
+  return out;
+}
+
 export function applyThemeCssVariables(theme: ThemeConfig, settings: AppSettings): void {
   const root = document.documentElement;
+  for (const [name, value] of Object.entries(derivePanelColors(theme.colors.background))) {
+    root.style.setProperty(name, value);
+  }
   const [r, g, b] = hexToRgbTuple(theme.colors.background);
   const alpha = Math.max(0.15, Math.min(1, settings.opacity));
 

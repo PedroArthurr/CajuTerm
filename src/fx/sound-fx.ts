@@ -31,6 +31,9 @@ export class SoundFxEngine {
   private ctx: AudioContext | null = null;
   private config: SoundConfig;
   private lastTypingAt = 0;
+  /** Suspende o AudioContext após ~3s sem sons (libera a thread de áudio / CPU). */
+  private suspendTimer: number | null = null;
+  private pendingSuspend: Promise<void> | null = null;
 
   constructor(initialConfig: SoundConfig) {
     this.config = { ...initialConfig };
@@ -53,10 +56,36 @@ export class SoundFxEngine {
       if (!Ctor) return null;
       this.ctx = new Ctor();
     }
-    if (this.ctx.state === 'suspended') {
-      void this.ctx.resume().catch(() => {});
+    if (this.suspendTimer !== null) {
+      window.clearTimeout(this.suspendTimer);
+      this.suspendTimer = null;
     }
-    return this.ctx;
+    const ctx = this.ctx;
+    if (this.pendingSuspend) {
+      // suspend() ainda em voo: retoma quando concluir, senão as notas agendadas ficariam congeladas
+      void this.pendingSuspend.then(() => ctx.resume()).catch(() => {});
+    } else if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {});
+    }
+    return ctx;
+  }
+
+  private scheduleIdleSuspend(tailSec: number): void {
+    if (this.suspendTimer !== null) {
+      window.clearTimeout(this.suspendTimer);
+    }
+    this.suspendTimer = window.setTimeout(() => {
+      this.suspendTimer = null;
+      const ctx = this.ctx;
+      if (!ctx || ctx.state !== 'running' || this.pendingSuspend) return;
+      const p: Promise<void> = ctx
+        .suspend()
+        .catch(() => {})
+        .finally(() => {
+          if (this.pendingSuspend === p) this.pendingSuspend = null;
+        });
+      this.pendingSuspend = p;
+    }, Math.ceil(tailSec * 1000) + 3000);
   }
 
   private getEffectiveVolume(multiplier = 1): number {
@@ -70,7 +99,11 @@ export class SoundFxEngine {
 
     const now = ctx.currentTime;
     const masterVol = this.getEffectiveVolume(masterMultiplier);
-    if (masterVol <= 0.001) return;
+    if (masterVol <= 0.001) {
+      this.scheduleIdleSuspend(0);
+      return;
+    }
+    let tail = 0;
 
     for (const step of steps) {
       const start = now + Math.max(0, step.delay);
@@ -91,9 +124,15 @@ export class SoundFxEngine {
 
       osc.connect(gainNode);
       gainNode.connect(ctx.destination);
+      osc.onended = () => {
+        osc.disconnect();
+        gainNode.disconnect();
+      };
       osc.start(start);
       osc.stop(start + dur + 0.02);
+      tail = Math.max(tail, step.delay + dur + 0.02);
     }
+    this.scheduleIdleSuspend(tail);
   }
 
   private resolvePreset(): SoundPreset {

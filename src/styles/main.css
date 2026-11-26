@@ -9,6 +9,31 @@
   --caju-border: rgba(255, 42, 133, 0.42);
   --caju-blur: 14px;
   --caju-font: 'JetBrainsMono Nerd Font', 'Cascadia Code NF', Consolas, monospace;
+
+  /* Superfícies derivadas do fundo do tema (themes.ts → derivePanelColors).
+     Os valores abaixo são os do Caju Cyberpunk e valem até o JS aplicar o tema. */
+  --caju-panel: #120d22;
+  --caju-panel-alt: #130d24;
+  --caju-panel-raised: #140f26;
+  --caju-input-bg: #17112b;
+
+  /* Escala de camadas (z-index) */
+  --z-bg: 0;
+  --z-stage: 2;
+  --z-chrome: 5;
+  --z-dock: 6;
+  --z-search: 25;
+  --z-titlebar: 30; /* acima de busca/dock: dropdowns da barra não ficam por baixo */
+  --z-dropdown: 40;
+  --z-palette: 60;
+  --z-modal: 70;
+  --z-confirm: 80;
+  --z-toast: 90;
+
+  /* Movimento */
+  --ease-out-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-enter: 160ms;
+  --dur-exit: 120ms;
 }
 
 * {
@@ -44,11 +69,17 @@ body {
     color var(--caju-theme-transition) ease;
 }
 
+/* Janela maximizada: sem cantos arredondados nem borda */
+.app-shell.is-maximized {
+  border-radius: 0;
+  border-width: 0;
+}
+
 /* Camada de fundo customizável */
 .bg-layer {
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: var(--z-bg);
   pointer-events: none;
   overflow: hidden;
 }
@@ -69,7 +100,7 @@ body {
 /* Barra de título customizada */
 .titlebar {
   position: relative;
-  z-index: 5;
+  z-index: var(--z-titlebar);
   display: flex;
   align-items: center;
   height: 40px;
@@ -132,8 +163,13 @@ body {
   cursor: pointer;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid transparent;
-  color: rgba(255, 255, 255, 0.72);
-  transition: all 180ms ease;
+  color: color-mix(in srgb, var(--caju-fg) 72%, transparent);
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    opacity 180ms ease;
 }
 
 .tab-item:hover {
@@ -145,7 +181,7 @@ body {
   background: rgba(255, 255, 255, 0.11);
   border-color: var(--caju-accent);
   color: var(--caju-fg);
-  box-shadow: 0 0 12px rgba(255, 42, 133, 0.25);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--caju-accent) 25%, transparent);
 }
 
 .tab-title {
@@ -190,7 +226,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 140ms ease, border-color 140ms ease;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 110ms ease;
 }
 
 .tb-btn:hover,
@@ -219,12 +255,14 @@ body {
   top: 34px;
   right: 0;
   min-width: 220px;
+  max-height: min(460px, calc(100vh - 90px));
+  overflow-y: auto;
   padding: 6px;
   border-radius: 8px;
-  background: #120d22;
+  background: var(--caju-panel);
   border: 1px solid var(--caju-border);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
-  z-index: 40;
+  z-index: var(--z-dropdown);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -243,6 +281,7 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .profile-dropdown button:hover {
@@ -260,13 +299,14 @@ body {
   top: 34px;
   right: 0;
   width: 340px;
-  max-height: 430px;
+  max-width: calc(100vw - 24px);
+  max-height: min(430px, calc(100vh - 90px));
   padding: 8px;
   border-radius: 10px;
-  background: #120d22;
+  background: var(--caju-panel);
   border: 1px solid var(--caju-border);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.72);
-  z-index: 45;
+  z-index: calc(var(--z-dropdown) + 5);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -285,15 +325,19 @@ body {
   color: var(--caju-fg);
   font-size: 12px;
   outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .paths-filter-input:focus {
   border-color: var(--caju-accent-2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--caju-accent-2) 22%, transparent);
 }
 
 .paths-list {
   overflow-y: auto;
   max-height: 360px;
+  min-height: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -372,6 +416,7 @@ body {
   font-size: 10px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 110ms ease;
 }
 
 .paths-mini-btn:hover {
@@ -385,15 +430,16 @@ body {
   position: absolute;
   top: 48px;
   right: 16px;
-  z-index: 25;
+  z-index: var(--z-search);
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: #140f26;
+  background: var(--caju-panel-raised);
   border: 1px solid var(--caju-accent);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  transform-origin: top right;
 }
 
 .search-bar.hidden {
@@ -409,6 +455,29 @@ body {
   padding: 4px 8px;
   outline: none;
   font-size: 12px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.search-bar input[type='text']:focus {
+  border-color: var(--caju-accent-2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--caju-accent-2) 22%, transparent);
+}
+
+.search-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--caju-fg) 72%, transparent);
+  transition: color 140ms ease;
+}
+
+.search-count:empty {
+  display: none;
+}
+
+.search-count.is-empty,
+.search-count.is-invalid {
+  color: #ff5ca8;
 }
 
 .search-opt {
@@ -427,6 +496,7 @@ body {
   padding: 4px 7px;
   cursor: pointer;
   font-size: 11px;
+  transition: background-color 120ms ease, transform 110ms ease;
 }
 
 .search-nav-btn:hover {
@@ -436,7 +506,7 @@ body {
 /* Palco do workspace + splits + overlays WebGL/Canvas */
 .workspace-stage {
   position: relative;
-  z-index: 2;
+  z-index: var(--z-stage);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -531,6 +601,7 @@ body {
 }
 
 .terminal-pane {
+  position: relative;
   width: 100%;
   height: 100%;
   padding: 4px;
@@ -550,21 +621,69 @@ body {
   background: transparent !important;
 }
 
+/* Scrollbar nativa oculta: largura 0 faz o xterm cair no fallback de 15px,
+   que o FitAddon reserva como gutter para a scrollbar customizada abaixo. */
+.terminal-pane .xterm-viewport {
+  scrollbar-width: none;
+}
+
 .terminal-pane .xterm-viewport::-webkit-scrollbar {
-  width: 6px;
+  width: 0;
+  height: 0;
+  display: none;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
+.term-scrollbar {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  right: 3px;
+  width: 12px;
+  z-index: 5;
+  opacity: 0;
+  pointer-events: none;
+  cursor: default;
+  transition: opacity 260ms ease;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+.term-scrollbar.has-scroll {
+  pointer-events: auto;
+}
+
+.terminal-pane:hover .term-scrollbar.has-scroll,
+.term-scrollbar.has-scroll.is-scrolled-up {
+  opacity: 0.6;
+}
+
+.term-scrollbar.has-scroll.is-active,
+.term-scrollbar.has-scroll:hover,
+.term-scrollbar.has-scroll.is-dragging {
+  opacity: 1;
+  transition-duration: 120ms;
+}
+
+.term-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  right: 3px;
+  width: 4px;
+  min-height: 28px;
   border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  will-change: transform;
+  transition:
+    width 140ms ease,
+    right 140ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb:hover {
+.term-scrollbar:hover .term-scrollbar-thumb,
+.term-scrollbar.is-dragging .term-scrollbar-thumb {
+  right: 2px;
+  width: 7px;
   background: var(--caju-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--caju-accent) 55%, transparent);
 }
 
 .split-divider {
@@ -613,7 +732,7 @@ body {
 /* Barra de status */
 .statusbar {
   position: relative;
-  z-index: 5;
+  z-index: var(--z-chrome);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -622,7 +741,7 @@ body {
   font-size: 11px;
   background: var(--caju-surface);
   border-top: 1px solid var(--caju-border);
-  color: rgba(255, 255, 255, 0.78);
+  color: color-mix(in srgb, var(--caju-fg) 78%, transparent);
 }
 
 .status-spacer {
@@ -644,7 +763,7 @@ body {
 .palette-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-palette);
   background: rgba(4, 2, 10, 0.55);
   backdrop-filter: blur(4px);
   display: flex;
@@ -656,10 +775,11 @@ body {
 .palette-box {
   width: min(620px, 92vw);
   border-radius: 12px;
-  background: #120d22;
+  background: var(--caju-panel);
   border: 1px solid var(--caju-accent);
   box-shadow: 0 22px 54px rgba(0, 0, 0, 0.72);
   overflow: hidden;
+  transform-origin: top center;
 }
 
 .palette-input {
@@ -674,9 +794,10 @@ body {
 }
 
 .palette-list {
-  max-height: 360px;
+  max-height: min(360px, calc(100vh - 170px));
   overflow-y: auto;
   padding: 6px;
+  scroll-padding: 6px;
 }
 
 .palette-item {
@@ -692,11 +813,18 @@ body {
   cursor: pointer;
   text-align: left;
   font-size: 13px;
+  transition: background-color 90ms ease;
 }
 
-.palette-item.selected,
-.palette-item:hover {
-  background: rgba(255, 42, 133, 0.24);
+/* Só a seleção (teclado ou mousemove) destaca a linha: evita duas linhas "selecionadas" */
+.palette-item.selected {
+  background: color-mix(in srgb, var(--caju-accent) 24%, transparent);
+}
+
+.palette-hl {
+  background: transparent;
+  color: var(--caju-accent-2);
+  font-weight: 700;
 }
 
 .palette-item-left {
@@ -737,7 +865,7 @@ body {
 .settings-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: var(--z-modal);
   background: rgba(5, 3, 12, 0.68);
   backdrop-filter: blur(6px);
   display: flex;
@@ -746,6 +874,7 @@ body {
 }
 
 .settings-modal {
+  position: relative;
   width: min(980px, 94vw);
   height: min(680px, 90vh);
   border-radius: 14px;
@@ -755,6 +884,10 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.settings-modal:focus {
+  outline: none;
 }
 
 .settings-header {
@@ -801,18 +934,23 @@ body {
   text-align: left;
   border: 1px solid transparent;
   background: transparent;
-  color: rgba(255, 255, 255, 0.75);
+  color: color-mix(in srgb, var(--caju-fg) 75%, transparent);
   padding: 9px 11px;
   border-radius: 7px;
   cursor: pointer;
   font-size: 13px;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.settings-nav-btn.active,
 .settings-nav-btn:hover {
-  background: rgba(255, 42, 133, 0.16);
+  background: color-mix(in srgb, var(--caju-accent) 8%, transparent);
+  color: var(--caju-fg);
+}
+
+.settings-nav-btn.active {
+  background: color-mix(in srgb, var(--caju-accent) 16%, transparent);
   border-color: var(--caju-border);
-  color: #fff;
+  color: var(--caju-fg);
 }
 
 .settings-content {
@@ -824,13 +962,47 @@ body {
   gap: 12px;
 }
 
+.settings-content:focus {
+  outline: none;
+}
+
+/* Toast flutuante (fora do conteúdo: sobrevive a re-renders) com fade automático */
 .settings-toast {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  z-index: 2;
+  max-width: min(460px, 70%);
   padding: 8px 12px;
   border-radius: 7px;
-  background: rgba(24, 255, 156, 0.16);
+  background: rgba(10, 30, 22, 0.94);
   border: 1px solid #18ff9c;
   color: #b8ffce;
   font-size: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms var(--ease-out-soft);
+}
+
+.settings-toast:empty {
+  display: none;
+}
+
+.settings-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.settings-toast.is-error {
+  background: rgba(40, 8, 20, 0.95);
+  border-color: #ff5ca8;
+  color: #ffd1e6;
+}
+
+.import-status.is-error {
+  color: #ff5ca8;
 }
 
 .setting-row {
@@ -849,8 +1021,18 @@ body {
   padding: 6px 9px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  background: #17112b;
+  background: var(--caju-input-bg);
   color: var(--caju-fg);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.setting-row input[type='text']:focus,
+.setting-row select:focus,
+.profile-grid input:focus,
+.code-editor:focus {
+  outline: none;
+  border-color: var(--caju-accent-2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--caju-accent-2) 22%, transparent);
 }
 
 .slider-wrap {
@@ -881,10 +1063,62 @@ body {
   background: rgba(255, 255, 255, 0.04);
   color: var(--caju-fg);
   cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 110ms ease;
+}
+
+.theme-card:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.24);
 }
 
 .theme-card.active {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.theme-card-wrap {
+  position: relative;
+  display: flex;
+}
+
+.theme-card-wrap > .theme-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-card-wrap.is-removable .theme-card-top {
+  padding-right: 22px;
+}
+
+.theme-card-delete {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--caju-fg);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms ease, background-color 140ms ease, border-color 140ms ease, transform 110ms ease;
+}
+
+.theme-card-wrap:hover .theme-card-delete,
+.theme-card-delete:focus-visible {
+  opacity: 0.85;
+}
+
+.theme-card-delete:hover {
+  opacity: 1;
+  background: #be123c;
+  border-color: #fb7185;
+  color: #fff;
 }
 
 .theme-card-top {
@@ -972,8 +1206,9 @@ body {
   padding: 5px 8px;
   border-radius: 5px;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  background: #17112b;
+  background: var(--caju-input-bg);
   color: var(--caju-fg);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .btn-primary,
@@ -986,6 +1221,48 @@ body {
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  transition: filter 140ms ease, background-color 140ms ease, transform 110ms ease, opacity 140ms ease;
+}
+
+.btn-primary:hover,
+.btn-danger:hover {
+  filter: brightness(1.12);
+}
+
+.btn-secondary:hover,
+.font-chip:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: default;
+  filter: none;
+  transform: none;
+}
+
+.btn-primary.is-busy {
+  cursor: progress;
+}
+
+.btn-icon {
+  min-width: 30px;
+  padding: 6px 9px;
+}
+
+.quick-paths-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quick-path-row input[type='text'] {
+  flex: 1;
+  width: auto;
+  font-family: var(--caju-font);
+  font-size: 12px;
 }
 
 .btn-primary {
@@ -1041,13 +1318,13 @@ body {
   top: 34px;
   right: 0;
   width: 390px;
-  max-height: 460px;
+  max-height: min(460px, calc(100vh - 90px));
   padding: 9px;
   border-radius: 10px;
-  background: #120d22;
+  background: var(--caju-panel);
   border: 1px solid var(--caju-border);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.72);
-  z-index: 46;
+  z-index: calc(var(--z-dropdown) + 6);
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -1060,6 +1337,8 @@ body {
 
 .sounds-dropdown {
   width: 320px;
+  max-width: calc(100vw - 24px);
+  overflow-y: auto;
 }
 
 .snippets-dropdown.hidden,
@@ -1084,6 +1363,8 @@ body {
 .snippets-dd-list {
   overflow-y: auto;
   max-height: 330px;
+  min-height: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1106,11 +1387,13 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
   overflow: hidden;
+  flex-shrink: 0;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 .snippets-dd-row:hover {
   border-color: var(--caju-accent);
-  background: rgba(255, 42, 133, 0.12);
+  background: color-mix(in srgb, var(--caju-accent) 12%, transparent);
 }
 
 .snippets-dropdown[data-agent='claude'] .snippets-dd-row:hover {
@@ -1167,13 +1450,19 @@ body {
   padding: 3px 8px;
   font-size: 10px;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 110ms ease;
 }
 
-.snippet-cat-chip.active,
 .snippet-cat-chip:hover {
-  background: rgba(255, 42, 133, 0.25);
+  background: color-mix(in srgb, var(--caju-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--caju-accent) 60%, transparent);
+  color: var(--caju-fg);
+}
+
+.snippet-cat-chip.active {
+  background: color-mix(in srgb, var(--caju-accent) 25%, transparent);
   border-color: var(--caju-accent);
-  color: #fff;
+  color: var(--caju-fg);
 }
 
 .snippet-badge {
@@ -1227,7 +1516,7 @@ body {
 }
 
 .reaction-btn:hover {
-  background: rgba(255, 42, 133, 0.22);
+  background: color-mix(in srgb, var(--caju-accent) 22%, transparent);
   border-color: var(--caju-accent);
   transform: translateY(-1px);
 }
@@ -1245,6 +1534,7 @@ body {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 120ms ease, transform 110ms ease;
 }
 
 .sounds-test-btn:hover {
@@ -1264,7 +1554,7 @@ body {
   padding: 5px 8px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  background: #17112b;
+  background: var(--caju-input-bg);
   color: var(--caju-fg);
   font-size: 12px;
 }
@@ -1313,7 +1603,7 @@ body {
 .confirm-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: var(--z-confirm);
   background: rgba(5, 3, 12, 0.72);
   backdrop-filter: blur(5px);
   display: flex;
@@ -1325,12 +1615,16 @@ body {
   width: min(440px, 90vw);
   padding: 18px 20px;
   border-radius: 12px;
-  background: #130d24;
+  background: var(--caju-panel-alt);
   border: 1px solid var(--caju-accent);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8);
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.confirm-box:focus {
+  outline: none;
 }
 
 .confirm-title {
@@ -1354,6 +1648,18 @@ body {
   color: var(--caju-accent-2);
   font-family: var(--caju-font);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Preview multi-linha (colar várias linhas): preserva quebras, trunca o excesso */
+.confirm-code-block {
+  display: block;
+  margin: 0;
+  max-height: 96px;
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+  line-height: 1.5;
 }
 
 .confirm-actions {
@@ -1363,12 +1669,16 @@ body {
   margin-top: 4px;
 }
 
+.confirm-actions .btn-danger {
+  margin-top: 0;
+}
+
 /* =========================================================
  * Dock compacto de Mais Usados (linha única, sem scroll)
  * ========================================================= */
 .snippets-dock {
   position: relative;
-  z-index: 6;
+  z-index: var(--z-dock);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1435,6 +1745,7 @@ body {
   padding: 0 6px;
   font-size: 10px;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .snippet-pill-edit:hover {
@@ -1460,8 +1771,8 @@ body {
   text-transform: uppercase;
   padding: 2px 7px;
   border-radius: 5px;
-  background: rgba(255, 42, 133, 0.18);
-  border: 1px solid rgba(255, 42, 133, 0.35);
+  background: color-mix(in srgb, var(--caju-accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--caju-accent) 35%, transparent);
   color: #ffd1e6;
 }
 
@@ -1510,4 +1821,228 @@ body {
   border-color: var(--caju-accent-2);
   background: rgba(0, 240, 255, 0.18);
   transform: translateY(-1px);
+}
+
+/* =========================================================
+ * Estados de interação (foco, pressionado)
+ * ========================================================= */
+
+/* Anel de foco por teclado; textarea do xterm e abas (terminal.css) ficam de fora */
+:where(
+    button,
+    a[href],
+    select,
+    summary,
+    [tabindex]:not([tabindex='-1']),
+    input[type='checkbox'],
+    input[type='radio'],
+    input[type='range'],
+    input[type='color'],
+    input[type='file']
+  ):not(.xterm-helper-textarea):focus-visible {
+  outline: 2px solid var(--caju-accent-2);
+  outline-offset: 2px;
+}
+
+.tb-btn:active,
+.win-btn:active,
+.btn-primary:active,
+.btn-secondary:active,
+.btn-danger:active,
+.font-chip:active,
+.paths-mini-btn:active,
+.search-nav-btn:active,
+.snippet-cat-chip:active,
+.reaction-btn:active,
+.sounds-test-btn:active,
+.agent-pill-btn:active,
+.popular-chip:active,
+.theme-card-delete:active,
+.pane-close-btn:active {
+  transform: scale(0.97);
+}
+
+.theme-card:active {
+  transform: scale(0.985);
+}
+
+/* =========================================================
+ * Movimento de overlays (entrada 150–180ms, saída ~120ms)
+ * ========================================================= */
+
+@keyframes cajuPopIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cajuPopOut {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+
+@keyframes cajuFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes cajuFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes cajuModalIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cajuModalOut {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+.profile-dropdown,
+.paths-dropdown,
+.snippets-dropdown,
+.sounds-dropdown {
+  transform-origin: top right;
+}
+
+.profile-dropdown:not(.hidden),
+.paths-dropdown:not(.hidden),
+.snippets-dropdown:not(.hidden),
+.sounds-dropdown:not(.hidden),
+.search-bar:not(.hidden) {
+  animation: cajuPopIn 150ms var(--ease-out-soft);
+}
+
+.profile-dropdown.is-closing,
+.paths-dropdown.is-closing,
+.snippets-dropdown.is-closing,
+.sounds-dropdown.is-closing,
+.search-bar.is-closing {
+  animation: cajuPopOut var(--dur-exit) ease-in forwards;
+  pointer-events: none;
+}
+
+.palette-backdrop,
+.confirm-backdrop,
+.settings-backdrop.is-entering {
+  animation: cajuFadeIn var(--dur-enter) ease-out;
+}
+
+.palette-backdrop .palette-box {
+  animation: cajuPopIn var(--dur-enter) var(--ease-out-soft);
+}
+
+.confirm-backdrop .confirm-box,
+.settings-backdrop.is-entering .settings-modal {
+  animation: cajuModalIn 180ms var(--ease-out-soft);
+}
+
+.palette-backdrop.is-closing,
+.confirm-backdrop.is-closing,
+.settings-backdrop.is-closing {
+  animation: cajuFadeOut 140ms ease-in forwards;
+  pointer-events: none;
+}
+
+.palette-backdrop.is-closing .palette-box {
+  animation: cajuPopOut var(--dur-exit) ease-in forwards;
+}
+
+.confirm-backdrop.is-closing .confirm-box,
+.settings-backdrop.is-closing .settings-modal {
+  animation: cajuModalOut var(--dur-exit) ease-in forwards;
+}
+
+/* Toast global da aplicação (erro de settings.json, falhas de salvamento) */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 68px;
+  z-index: var(--z-toast);
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 9px 14px;
+  border-radius: 8px;
+  background: rgba(10, 30, 22, 0.95);
+  border: 1px solid #18ff9c;
+  color: #b8ffce;
+  font-size: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  pointer-events: none;
+  cursor: default;
+  transition: opacity 180ms ease, transform 180ms var(--ease-out-soft);
+}
+
+.app-toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.app-toast.is-error {
+  background: rgba(40, 8, 20, 0.96);
+  border-color: #ff5ca8;
+  color: #ffd1e6;
+}
+
+/* =========================================================
+ * Movimento reduzido: zera animações e transições de CSS
+ * ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  :root {
+    --caju-theme-transition: 0ms;
+  }
+
+  .popular-chip:hover,
+  .reaction-btn:hover,
+  .pane-close-btn:hover,
+  :active {
+    transform: none !important;
+  }
 }

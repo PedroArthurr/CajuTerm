@@ -57,50 +57,51 @@
 
         <div class="titlebar-actions">
           <div class="paths-dropdown-wrap">
-            <button id="btn-paths-menu" class="tb-btn" title="Atalhos de Pastas (Paths)" aria-label="Atalhos de Pastas">📁</button>
+            <button type="button" id="btn-paths-menu" class="tb-btn" aria-haspopup="true" aria-expanded="false" title="Atalhos de Pastas (Paths)" aria-label="Atalhos de Pastas">📁</button>
             <div id="paths-dropdown" class="paths-dropdown hidden"></div>
           </div>
           <div class="snippets-dropdown-wrap">
-            <button id="btn-snippets-menu" class="tb-btn" title="Snippets CLI & Comandos / (AGY & Claude)" aria-label="Snippets e Comandos Slash">⚡</button>
+            <button type="button" id="btn-snippets-menu" class="tb-btn" aria-haspopup="true" aria-expanded="false" title="Snippets CLI & Comandos / (AGY & Claude)" aria-label="Snippets e Comandos Slash">⚡</button>
             <div id="snippets-dropdown" class="snippets-dropdown hidden"></div>
           </div>
           <div class="sounds-dropdown-wrap">
-            <button id="btn-sounds-menu" class="tb-btn" title="Efeitos de Som & Reações" aria-label="Efeitos de Som e Reações">🔊</button>
+            <button type="button" id="btn-sounds-menu" class="tb-btn" aria-haspopup="true" aria-expanded="false" title="Efeitos de Som & Reações" aria-label="Efeitos de Som e Reações">🔊</button>
             <div id="sounds-dropdown" class="sounds-dropdown hidden"></div>
           </div>
-          <button id="btn-new-tab" class="tb-btn" title="Nova Aba (Ctrl+Shift+T)" aria-label="Nova Aba">+</button>
+          <button type="button" id="btn-new-tab" class="tb-btn" title="Nova Aba (Ctrl+Shift+T)" aria-label="Nova Aba">+</button>
           <div class="profile-dropdown-wrap">
-            <button id="btn-profile-menu" class="tb-btn tb-btn-small" title="Escolher Perfil" aria-label="Escolher Perfil">▾</button>
+            <button type="button" id="btn-profile-menu" class="tb-btn tb-btn-small" aria-haspopup="true" aria-expanded="false" title="Escolher Perfil" aria-label="Escolher Perfil">▾</button>
             <div id="profile-dropdown" class="profile-dropdown hidden"></div>
           </div>
-          <button id="btn-split-v" class="tb-btn" title="Split Vertical (Alt+Shift+D)" aria-label="Split Vertical">⫼</button>
-          <button id="btn-split-h" class="tb-btn" title="Split Horizontal (Alt+Shift+E)" aria-label="Split Horizontal">⫿</button>
-          <button id="btn-close-split" class="tb-btn" title="Fechar Divisão (Alt+Shift+W)" aria-label="Fechar Divisão">⊟</button>
-          <button id="btn-search" class="tb-btn" title="Buscar (Ctrl+Shift+F)" aria-label="Buscar">⌕</button>
-          <button id="btn-palette" class="tb-btn" title="Paleta de Comandos (Ctrl+Shift+P)" aria-label="Paleta de Comandos">⌘</button>
-          <button id="btn-always-on-top" class="tb-btn" title="Sempre no Topo (Ctrl+Shift+A)" aria-label="Sempre no Topo">📌</button>
-          <button id="btn-settings" class="tb-btn" title="Configurações (Ctrl+,)" aria-label="Configurações">⚙</button>
+          <button type="button" id="btn-split-v" class="tb-btn" title="Split Vertical (Alt+Shift+D)" aria-label="Split Vertical">⫼</button>
+          <button type="button" id="btn-split-h" class="tb-btn" title="Split Horizontal (Alt+Shift+E)" aria-label="Split Horizontal">⫿</button>
+          <button type="button" id="btn-close-split" class="tb-btn" title="Fechar Divisão (Alt+Shift+W)" aria-label="Fechar Divisão">⊟</button>
+          <button type="button" id="btn-search" class="tb-btn" title="Buscar (Ctrl+Shift+F)" aria-label="Buscar">⌕</button>
+          <button type="button" id="btn-palette" class="tb-btn" title="Paleta de Comandos (Ctrl+Shift+P)" aria-label="Paleta de Comandos">⌘</button>
+          <button type="button" id="btn-always-on-top" class="tb-btn" title="Sempre no Topo (Ctrl+Shift+A)" aria-label="Sempre no Topo">📌</button>
+          <button type="button" id="btn-settings" class="tb-btn" title="Configurações (Ctrl+,)" aria-label="Configurações">⚙</button>
         </div>
 
         <div class="window-controls">
-          <button id="win-min" class="win-btn" title="Minimizar" aria-label="Minimizar">─</button>
-          <button id="win-max" class="win-btn" title="Maximizar / Restaurar" aria-label="Maximizar">□</button>
-          <button id="win-close" class="win-btn win-btn-close" title="Fechar" aria-label="Fechar">✕</button>
+          <button type="button" id="win-min" class="win-btn" title="Minimizar" aria-label="Minimizar">─</button>
+          <button type="button" id="win-max" class="win-btn" title="Maximizar / Restaurar" aria-label="Maximizar">□</button>
+          <button type="button" id="win-close" class="win-btn win-btn-close" title="Fechar" aria-label="Fechar">✕</button>
         </div>
       </header>
 
       <!-- Barra de busca flutuante no terminal -->
-      <div id="search-bar" class="search-bar hidden">
+      <div id="search-bar" class="search-bar hidden" role="search">
         <input id="search-input" type="text" autocomplete="off" spellcheck="false" placeholder="Buscar no terminal..." />
-        <label class="search-opt" title="Diferenciar maiúsculas/minúsculas">
+        <label id="search-case-label" class="search-opt" title="Diferenciar maiúsculas/minúsculas">
           <input id="search-case" type="checkbox" /> Aa
         </label>
-        <label class="search-opt" title="Expressão regular">
+        <label id="search-regex-label" class="search-opt" title="Expressão regular">
           <input id="search-regex" type="checkbox" /> .*
         </label>
-        <button id="search-prev" class="search-nav-btn" title="Anterior">▲</button>
-        <button id="search-next" class="search-nav-btn" title="Próximo">▼</button>
-        <button id="search-close" class="search-nav-btn" title="Fechar (Esc)">✕</button>
+        <span id="search-count" class="search-count" aria-live="polite"></span>
+        <button type="button" id="search-prev" class="search-nav-btn" title="Anterior">▲</button>
+        <button type="button" id="search-next" class="search-nav-btn" title="Próximo">▼</button>
+        <button type="button" id="search-close" class="search-nav-btn" title="Fechar (Esc)">✕</button>
       </div>
 
       <!-- Área principal de abas e splits + overlays WebGL/Canvas -->

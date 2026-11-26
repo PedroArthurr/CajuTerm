@@ -1,0 +1,74 @@
+/* Estados de terminal/abas pertencentes a terminal-pane.ts / workspace.ts.
+   Visual base de .tab-item vive em main.css; aqui só estados (foco, arrasto, renomear, links). */
+
+/* ---- Abas: foco por teclado ---- */
+.tab-item:focus {
+  outline: none;
+}
+
+.tabs-bar .tab-item:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--caju-accent-2),
+    0 0 10px color-mix(in srgb, var(--caju-accent-2) 35%, transparent);
+}
+
+/* ---- Abas: reordenação por arrasto (transform/opacity; FLIP controlado via estilo inline) ---- */
+
+.tabs-bar .tab-item.is-dragging {
+  position: relative;
+  z-index: 3;
+  cursor: grabbing;
+  opacity: 0.94;
+  will-change: transform;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.45),
+    0 0 12px color-mix(in srgb, var(--caju-accent) 30%, transparent);
+}
+
+.tabs-bar.is-reordering {
+  cursor: grabbing;
+}
+
+.tabs-bar.is-reordering .tab-item:not(.is-dragging) {
+  pointer-events: none;
+}
+
+/* ---- Abas: renomear inline ---- */
+.tab-item.is-renaming {
+  cursor: text;
+}
+
+.tab-rename-input {
+  min-width: 60px;
+  width: 140px;
+  max-width: 170px;
+  height: 20px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  border: none;
+  border-radius: 4px;
+  outline: none;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 -1px 0 var(--caju-accent);
+  color: var(--caju-fg);
+  font: inherit;
+  font-size: 12px;
+  caret-color: var(--caju-accent);
+}
+
+.tab-rename-input::selection {
+  background: color-mix(in srgb, var(--caju-accent) 45%, transparent);
+}
+
+/* ---- Links: cursor de "mãozinha" só com Ctrl pressionado (abrir exige Ctrl+clique) ---- */
+html:not(.caju-link-mod) .terminal-pane .xterm .xterm-cursor-pointer,
+html:not(.caju-link-mod) .terminal-pane .xterm.xterm-cursor-pointer {
+  cursor: text;
+}
+
+html:not(.caju-link-mod) .terminal-pane .xterm.enable-mouse-events .xterm-cursor-pointer,
+html:not(.caju-link-mod) .terminal-pane .xterm.enable-mouse-events.xterm-cursor-pointer {
+  cursor: default;
+}
