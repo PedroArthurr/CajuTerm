@@ -16,7 +16,7 @@ import type {
   ProfileConfig,
   ThemeConfig,
 } from '../types';
-import { openExternalUrl, ptyKill, ptyResize, ptySpawn, ptyWrite } from './pty-bridge';
+import { openExternalUrl, ptyHasChild, ptyKill, ptyResize, ptySpawn, ptyWrite } from './pty-bridge';
 
 export interface SearchResultsInfo {
   resultIndex: number;
@@ -1240,10 +1240,21 @@ export class TerminalPane {
     this.focus();
   }
 
-  public changeDirectory(targetPath: string): void {
-    if (this.disposed || this.exited || this.ptyId === null) return;
+  /**
+   * Injeta `cd` no shell. Retorna 'busy' sem escrever nada se há programa em primeiro plano
+   * (claude, vim, ssh...): o texto viraria entrada desse programa, não comando do shell.
+   */
+  public async changeDirectory(targetPath: string): Promise<'sent' | 'busy' | 'unavailable'> {
+    if (this.disposed || this.exited || this.ptyId === null) return 'unavailable';
     const winPath = targetPath.replace(/\//g, '\\');
     const shellLower = this.profile.shell.toLowerCase();
+
+    // wsl.exe: processos Linux não aparecem na árvore do Windows; mantém injeção direta
+    if (!shellLower.includes('wsl')) {
+      const ptyId = this.ptyId;
+      if (await ptyHasChild(ptyId)) return 'busy';
+      if (this.disposed || this.exited || this.ptyId !== ptyId) return 'unavailable';
+    }
 
     let cmd: string;
     if (shellLower.includes('cmd')) {
@@ -1257,6 +1268,7 @@ export class TerminalPane {
 
     void ptyWrite(this.ptyId, cmd);
     this.focus();
+    return 'sent';
   }
 
   // ---------------------------------------------------------------- Foco / cursor FX

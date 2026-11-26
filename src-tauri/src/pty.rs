@@ -30,6 +30,8 @@ struct PtySession {
     input: mpsc::Sender<Vec<u8>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     killed: Arc<AtomicBool>,
+    /// PID do shell raiz; usado para detectar programas em primeiro plano (claude, vim, ssh...).
+    pid: Option<u32>,
 }
 
 impl PtySession {
@@ -178,6 +180,7 @@ impl PtyManager {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let killed_flag = Arc::new(AtomicBool::new(false));
         let killer = child.clone_killer();
+        let shell_pid = child.process_id();
         let (tx, rx) = mpsc::sync_channel::<ReadMsg>(READ_QUEUE_DEPTH);
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
 
@@ -218,6 +221,7 @@ impl PtyManager {
                 input: input_tx,
                 killer,
                 killed: killed_flag,
+                pid: shell_pid,
             },
         );
 
@@ -280,6 +284,19 @@ impl PtyManager {
             })
             .map_err(|e| format!("Falha ao redimensionar PTY {id}: {e}"))?;
         Ok(())
+    }
+
+    /// `true` se o shell da sessão tem algum processo filho vivo (programa em primeiro plano).
+    /// Texto injetado no PTY nesse estado vira entrada do programa, não comando do shell.
+    pub fn has_child_process(&self, id: u32) -> Result<bool, String> {
+        let pid = {
+            let guard = self.sessions.lock();
+            guard
+                .get(&id)
+                .ok_or_else(|| format!("Sessão PTY {id} não encontrada"))?
+                .pid
+        };
+        Ok(pid.map(shell_has_child).unwrap_or(false))
     }
 
     /// Encerra explicitamente a sessão PTY e mata o processo filho (sem evento `exit`).
@@ -471,6 +488,53 @@ fn resolve_working_dir(raw_cwd: Option<&str>) -> Option<PathBuf> {
         }
     }
     dirs::home_dir()
+}
+
+/// Varre a tabela de processos procurando filhos diretos de `shell_pid`.
+/// conhost/OpenConsole são hospedeiros de console, não programas do usuário.
+#[cfg(windows)]
+fn shell_has_child(shell_pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    const IGNORED: [&str; 2] = ["conhost.exe", "openconsole.exe"];
+
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut found = false;
+        let mut ok = Process32FirstW(snap, &mut entry) != 0;
+        while ok {
+            if entry.th32ParentProcessID == shell_pid && entry.th32ProcessID != shell_pid {
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+                if !IGNORED.contains(&name.as_str()) {
+                    found = true;
+                    break;
+                }
+            }
+            ok = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_has_child(_shell_pid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]

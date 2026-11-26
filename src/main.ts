@@ -443,6 +443,16 @@ async function bootstrap(): Promise<void> {
 
   let activeSettings: AppSettings = bundle.settings;
 
+  /** `cd` no painel ativo; com programa em primeiro plano (claude, vim...) abre nova aba no caminho. */
+  const cdActivePane = async (path: string): Promise<void> => {
+    const pane = workspace.getActivePane();
+    if (!pane) return;
+    if ((await pane.changeDirectory(path)) === 'busy') {
+      void workspace.createTab(undefined, path);
+      showAppToast(t('paths.busyNewTab', lang()));
+    }
+  };
+
   const updateCrtSafePadding = (settings: AppSettings): void => {
     const curvature =
       settings.shaders.enabled && settings.shaders.curvature
@@ -823,7 +833,7 @@ async function bootstrap(): Promise<void> {
         id: `path-cd-${qp.path}`,
         category: t('palette.catPathCd', l),
         label: `${qp.label} — ${qp.path}`,
-        run: () => workspace.getActivePane()?.changeDirectory(qp.path),
+        run: () => void cdActivePane(qp.path),
       });
       cmds.push({
         id: `path-tab-${qp.path}`,
@@ -926,7 +936,7 @@ async function bootstrap(): Promise<void> {
         mainBtn.append(labelEl, subEl);
         mainBtn.addEventListener('click', () => {
           closeDropdown('paths-dropdown');
-          workspace.getActivePane()?.changeDirectory(entry.path);
+          void cdActivePane(entry.path);
         });
 
         const tabBtn = document.createElement('button');
@@ -962,7 +972,7 @@ async function bootstrap(): Promise<void> {
       if (ev.key === 'Enter' && visibleEntries.length > 0) {
         ev.preventDefault();
         closeDropdown('paths-dropdown');
-        workspace.getActivePane()?.changeDirectory(visibleEntries[0].path);
+        void cdActivePane(visibleEntries[0].path);
       }
     });
 

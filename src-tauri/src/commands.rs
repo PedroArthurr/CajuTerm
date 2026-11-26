@@ -83,6 +83,12 @@ pub async fn pty_kill(pty: State<'_, Arc<PtyManager>>, id: u32) -> Result<(), St
 }
 
 #[tauri::command]
+pub async fn pty_has_child(pty: State<'_, Arc<PtyManager>>, id: u32) -> Result<bool, String> {
+    let pty = Arc::clone(pty.inner());
+    run_blocking(move || pty.has_child_process(id)).await
+}
+
+#[tauri::command]
 pub async fn get_config_bundle(
     config: State<'_, Arc<ConfigState>>,
 ) -> Result<ConfigBundle, String> {

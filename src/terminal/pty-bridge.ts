@@ -146,6 +146,16 @@ export async function ptyKill(id: number): Promise<void> {
   await invoke('pty_kill', { id });
 }
 
+/** `true` se há programa rodando sob o shell (claude, vim, ssh...). Em erro assume livre. */
+export async function ptyHasChild(id: number): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    return await invoke<boolean>('pty_has_child', { id });
+  } catch {
+    return false;
+  }
+}
+
 export async function onConfigReloaded(handler: (bundle: ConfigBundle) => void): Promise<UnlistenFn> {
   if (!isTauriRuntime()) {
     return () => {};

@@ -71,6 +71,7 @@ fn main() {
             commands::pty_write,
             commands::pty_resize,
             commands::pty_kill,
+            commands::pty_has_child,
             commands::get_config_bundle,
             commands::save_settings,
             commands::save_raw_settings,
