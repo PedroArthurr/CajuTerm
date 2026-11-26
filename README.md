@@ -6,7 +6,16 @@ O CajuTerm nasceu de uma vontade simples: ter o PowerShell, o CMD e o WSL num lu
 
 É feito com [Tauri 2](https://tauri.app), [xterm.js](https://xtermjs.org) e ConPTY — o instalador tem menos de 2 MB.
 
-<!-- Adicione aqui um print ou GIF: ![CajuTerm](docs/screenshot.png) -->
+![CajuTerm — split vertical com shader CRT e dock de snippets](docs/screenshot.png)
+
+<details>
+<summary>Mais capturas (Configurações e Paleta de Comandos)</summary>
+
+| Estúdio de Personalização | Paleta de Comandos (`Ctrl+Shift+P`) |
+|---|---|
+| ![Configurações do CajuTerm](docs/screenshot-settings.png) | ![Paleta de Comandos do CajuTerm](docs/screenshot-palette.png) |
+
+</details>
 
 ---
 
