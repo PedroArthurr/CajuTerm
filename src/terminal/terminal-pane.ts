@@ -55,6 +55,8 @@ const WEBGL_SUSPEND_DELAY_MS = 1000;
 const FONT_MIN = 8;
 const FONT_MAX = 40;
 const MAX_PROMPT_MARKS = 2000;
+const APP_DRAG_PX_PER_TICK = 10;
+const APP_WHEEL_MAX_PER_FRAME = 4;
 
 // ---- Ctrl seguro → cursor "pointer" em links só com Ctrl pressionado (ver terminal.css) ----
 let linkModRefs = 0;
@@ -187,6 +189,11 @@ export class TerminalPane {
   private scrollActivityTimer: number | null = null;
   private scrollDisposables: IDisposable[] = [];
   private scrollDrag: { pointerId: number; startY: number; startLine: number } | null = null;
+  // Tela alternativa: a barra repassa roda ao app (ver setupScrollbar)
+  private appScrollDrag: { pointerId: number; startY: number; sentTicks: number } | null = null;
+  private appWheelPending = 0;
+  private appWheelRaf: number | null = null;
+  private appWheelAccum = 0;
 
   // Spawn / PTY
   private spawnGen = 0;
@@ -555,7 +562,20 @@ export class TerminalPane {
     this.scrollbarEl.addEventListener(
       'wheel',
       (ev) => {
-        if (!ev.ctrlKey && viewportEl) {
+        if (ev.ctrlKey) return;
+        if (this.isAppScroll()) {
+          // Mesmo ritmo do xterm: um relato de roda a cada linha acumulada
+          const lines =
+            ev.deltaMode === 1 ? ev.deltaY : ev.deltaMode === 2 ? ev.deltaY * this.terminal.rows : ev.deltaY / this.rowHeightPx();
+          this.appWheelAccum += lines;
+          if (Math.abs(this.appWheelAccum) >= 1) {
+            this.queueAppWheel(Math.sign(this.appWheelAccum));
+            this.appWheelAccum %= 1;
+          }
+          this.flashScrollbar();
+          return;
+        }
+        if (viewportEl) {
           viewportEl.scrollTop += ev.deltaMode === 1 ? ev.deltaY * 20 : ev.deltaY;
           this.flashScrollbar();
         }
@@ -575,6 +595,24 @@ export class TerminalPane {
       if (ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();
+
+      if (this.isAppScroll()) {
+        this.opts.onFocus(this);
+        if (ev.target !== this.scrollThumbEl) {
+          // Track: uma "página" na direção do clique
+          const thumbRect = this.scrollThumbEl.getBoundingClientRect();
+          const dir = ev.clientY < thumbRect.top + thumbRect.height / 2 ? -1 : 1;
+          this.queueAppWheel(dir * Math.max(3, Math.round(this.terminal.rows / 3)));
+          this.flashScrollbar();
+          this.terminal.focus();
+          return;
+        }
+        this.appScrollDrag = { pointerId: ev.pointerId, startY: ev.clientY, sentTicks: 0 };
+        this.scrollbarEl.setPointerCapture(ev.pointerId);
+        this.scrollbarEl.classList.add('is-dragging');
+        return;
+      }
+
       const metrics = this.getScrollMetrics();
       if (!metrics) return;
 
@@ -596,6 +634,17 @@ export class TerminalPane {
     });
 
     this.scrollbarEl.addEventListener('pointermove', (ev) => {
+      const appDrag = this.appScrollDrag;
+      if (appDrag && ev.pointerId === appDrag.pointerId) {
+        const m = this.getAppThumbMetrics();
+        const dy = ev.clientY - appDrag.startY;
+        const visual = Math.min(m.trackH - m.thumbH - m.rest, Math.max(-m.rest, dy));
+        this.scrollThumbEl.style.transform = `translateY(${m.rest + visual}px)`;
+        const target = Math.trunc(dy / APP_DRAG_PX_PER_TICK);
+        this.queueAppWheel(target - appDrag.sentTicks);
+        appDrag.sentTicks = target;
+        return;
+      }
       const drag = this.scrollDrag;
       if (!drag || ev.pointerId !== drag.pointerId) return;
       const metrics = this.getScrollMetrics();
@@ -606,6 +655,16 @@ export class TerminalPane {
     });
 
     const endDrag = (ev: PointerEvent) => {
+      if (this.appScrollDrag && ev.pointerId === this.appScrollDrag.pointerId) {
+        this.appScrollDrag = null;
+        this.scrollbarEl.classList.remove('is-dragging');
+        if (this.scrollbarEl.hasPointerCapture(ev.pointerId)) {
+          this.scrollbarEl.releasePointerCapture(ev.pointerId);
+        }
+        this.scheduleScrollbarUpdate(); // thumb volta ao centro (transição no CSS)
+        this.terminal.focus();
+        return;
+      }
       if (!this.scrollDrag || ev.pointerId !== this.scrollDrag.pointerId) return;
       this.scrollDrag = null;
       this.scrollbarEl.classList.remove('is-dragging');
@@ -640,8 +699,78 @@ export class TerminalPane {
     });
   }
 
+  /** Tela alternativa (Claude Code fullscreen, vim, less): sem scrollback, o app é dono do scroll. */
+  private isAppScroll(): boolean {
+    return this.terminal.buffer.active.type === 'alternate';
+  }
+
+  /** Thumb de tamanho fixo que repousa no centro: o terminal não conhece a posição real do app. */
+  private getAppThumbMetrics(): { trackH: number; thumbH: number; rest: number } {
+    const trackH = this.scrollbarEl.clientHeight;
+    const thumbH = Math.min(trackH, Math.max(28, trackH * 0.2));
+    return { trackH, thumbH, rest: (trackH - thumbH) / 2 };
+  }
+
+  private rowHeightPx(): number {
+    const h = this.screenEl?.clientHeight ?? 0;
+    return h > 0 ? h / this.terminal.rows : 16;
+  }
+
+  /** Enfileira relatos de roda (negativo = subir), drenados por frame para não inundar o PTY. */
+  private queueAppWheel(ticks: number): void {
+    if (!ticks) return;
+    this.appWheelPending += ticks;
+    if (this.appWheelRaf !== null) return;
+    const flush = () => {
+      this.appWheelRaf = null;
+      if (this.disposed || !this.isAppScroll()) {
+        this.appWheelPending = 0;
+        return;
+      }
+      const dir = Math.sign(this.appWheelPending);
+      const n = Math.min(APP_WHEEL_MAX_PER_FRAME, Math.abs(this.appWheelPending));
+      this.appWheelPending -= dir * n;
+      for (let i = 0; i < n; i++) this.dispatchAppWheel(dir);
+      if (this.appWheelPending !== 0) this.appWheelRaf = requestAnimationFrame(flush);
+    };
+    this.appWheelRaf = requestAnimationFrame(flush);
+  }
+
+  /**
+   * Roda sintética no .xterm-screen: o próprio xterm codifica conforme o modo do app
+   * (relato SGR/X10 com mouse tracking; setas sem ele). 1 evento = 1 relato.
+   */
+  private dispatchAppWheel(dir: number): void {
+    const screen = this.screenEl?.isConnected ? this.screenEl : this.element.querySelector<HTMLElement>('.xterm-screen');
+    if (!screen) return;
+    const r = screen.getBoundingClientRect();
+    screen.dispatchEvent(
+      new WheelEvent('wheel', {
+        deltaY: dir * 3,
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+        clientX: r.left + r.width / 2,
+        clientY: r.top + r.height / 3,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+  }
+
   private updateScrollbar(): void {
     if (this.disposed) return;
+    const appScroll = this.isAppScroll();
+    this.scrollbarEl.classList.toggle('is-app-scroll', appScroll);
+    if (appScroll) {
+      this.scrollbarEl.classList.add('has-scroll');
+      this.scrollbarEl.classList.remove('is-scrolled-up');
+      if (!this.appScrollDrag) {
+        const m = this.getAppThumbMetrics();
+        this.scrollThumbEl.style.height = `${m.thumbH}px`;
+        this.scrollThumbEl.style.transform = `translateY(${m.rest}px)`;
+      }
+      return;
+    }
+    this.appScrollDrag = null;
     const metrics = this.getScrollMetrics();
     this.scrollbarEl.classList.toggle('has-scroll', metrics !== null);
     if (!metrics) {
@@ -1369,7 +1498,7 @@ export class TerminalPane {
     for (const id of timers) {
       if (id !== null) window.clearTimeout(id);
     }
-    for (const raf of [this.scrollbarRaf, this.fitRaf, this.cursorRaf]) {
+    for (const raf of [this.scrollbarRaf, this.fitRaf, this.cursorRaf, this.appWheelRaf]) {
       if (raf !== null) cancelAnimationFrame(raf);
     }
     this.resizeObserver.disconnect();

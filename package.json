@@ -1,7 +1,7 @@
 {
   "name": "cajuterm",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "CajuTerm — Terminal GPU/WebGL altamente personalizável para Windows 10/11 com PowerShell e ConPTY",
   "type": "module",
   "scripts": {

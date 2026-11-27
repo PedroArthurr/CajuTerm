@@ -145,6 +145,9 @@ impl PtyManager {
         cmd.env("TERM_PROGRAM", "CajuTerm");
         cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         cmd.env("WT_SESSION", "cajuterm-conpty");
+        // Claude Code sempre em fullscreen (alt-screen + mouse: cliques do mod e barra de scroll).
+        // Vence `"tui": "default"` do settings.json; um perfil pode sobrescrever com "0".
+        cmd.env("CLAUDE_CODE_NO_FLICKER", "1");
 
         if let Some(custom_env) = env {
             for (key, value) in custom_env {
@@ -552,5 +555,20 @@ mod tests {
             assert_eq!(out, "aé€😀", "split at {split}");
             assert!(pending.is_empty());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detects_live_child_process() {
+        let me = std::process::id();
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/c", "ping", "-n", "5", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cmd");
+        assert!(super::shell_has_child(me));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!super::shell_has_child(child.id()));
     }
 }
